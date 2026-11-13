@@ -1,0 +1,31 @@
+# build output
+/release/
+
+# where anonymous logs go: only in the release zip
+/mods/needle_party/logs.cfg
+/mods/needle_party/models/rig.dat
+
+# test builds: local only
+/dev/mp_report.gd
+/scripts/build_testbuild.ps1
+*.zip
+
+# Godot
+.godot/
+*.import
+
+# logs and local test output
+*.log
+mp_selftest_*.txt
+mp_probe*_dump.txt
+
+# local working notes: quoted game internals stay unpublished (NOTICE)
+/dev/*.md
+
+# OS / editors
+Thumbs.db
+Desktop.ini
+.DS_Store
+.vscode/
+.idea/
+dev/lab/
