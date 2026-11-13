@@ -1,5 +1,5 @@
 NEEDLE PARTY  -  online co-op for Find The Needle (full game)
-made by Luna7070  -  https://github.com/Luna7070/needle-party
+made by Luna and Lolfa  -  https://github.com/Luna7070/needle-party
 ==========================================================================
 
 Unofficial, free mod. Everyone in the session needs the full game and this
@@ -46,6 +46,27 @@ Friends: accept the invite (F10 or JOIN in the panel), or join from Steam.
 Only the host saves. Machines run on the host (so hay is never counted twice);
 everyone sees them move, smoke and light up.
 
+SMOOTH BELTS
+------------
+Conveyor belts move smoother: a row no longer stops for a moment and then
+jumps on when the belt in front of it moves. It is all in the mod's scripts:
+install.bat puts no program file anywhere ("NEEDLE PARTY installed - smooth
+belts on"). The panel (F9) has the switch "SMOOTH BELTS: ON" and under it what
+it does now: "Now: active", "active (new game version, being checked)",
+"off (game update - normal belts)", "off (problem found - normal belts)".
+Off means the game's own belt drawing, exactly as without the mod.
+Guests get the host's exact belts: on a guest, the belts near you (about
+45 m) show the items exactly where the host has them. The guest draws them
+itself with the game's own models, from the host's belt data; its own belts
+keep running underneath for picking up and machines. On any fault it goes
+back to the normal smooth belts by itself. Script only, no DLL.
+An older test version put a "belt core" file into the game folder: install.bat
+takes it out and puts the game's own file back, checked byte for byte. If the
+game ever says it "couldn't load libbeltcore": run uninstall.bat, or in Steam
+"Verify integrity of game files".
+No installer at all: copy the mods\needle_party folder into the game folder and
+add the line  MPMod="*mods/needle_party/mp.gd"  under [autoload] in override.cfg.
+
 PROBLEMS?
 ---------
 Send these two files (from the PC that had the problem):
@@ -54,7 +75,7 @@ Send these two files (from the PC that had the problem):
 
 CREDITS
 -------
-NEEDLE PARTY ............ Luna7070 (vibecoded with an AI assistant)
+NEEDLE PARTY ............ Luna and Lolfa (vibecoded with an AI assistant)
 Original co-op mod ...... AleDev11, anxo0 and contributors (MIT)
 Performance ideas ....... xRangerDE, Multiplayer Enhanced (MIT)
 Farmer model ............ Quaternius (CC0)

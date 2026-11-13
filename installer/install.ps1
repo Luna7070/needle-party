@@ -1,4 +1,4 @@
-﻿# NEEDLE PARTY - co-op for Find The Needle (made by Luna7070) - installer
+﻿# NEEDLE PARTY - co-op for Find The Needle (made by Luna and Lolfa) - installer
 # Based on AleDev11's FindTheNeedle-Coop-Mod (MIT). Unofficial mod.
 #
 #   install.ps1              install / update
@@ -11,7 +11,9 @@ param(
     [switch]$Uninstall,
     [string]$GameDir = "",
     [switch]$NoPause,
-    [switch]$SkipRunningCheck   # for testing on a copy of the game folder
+    [switch]$Turbo,             # install_turbo.bat: also the optional belt core (Turbo)
+    [switch]$SkipRunningCheck,  # for testing on a copy of the game folder
+    [string]$SacTest = ""       # installer tests only: pretend Smart App Control is 0 / 1 / 2 / missing
 )
 $ErrorActionPreference = "Stop"
 $ModName   = "needle_party"
@@ -19,7 +21,28 @@ $Autoload  = 'MPMod="*mods/needle_party/mp.gd"'
 $AppId     = "5160800"
 $Here      = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Src       = Join-Path (Split-Path -Parent $Here) "mods\$ModName"
-$Utf8      = New-Object System.Text.UTF8Encoding $false
+# (2026-11-15) Smart App Control / WDAC machines run this script in Constrained Language Mode: no
+# .NET objects or methods. Every such step has a plain PowerShell fallback (see Read-Lines / Write-Text).
+$Utf8      = $null
+try { $Utf8 = New-Object System.Text.UTF8Encoding $false } catch { $Utf8 = $null }
+$Clm       = $ExecutionContext.SessionState.LanguageMode -ne "FullLanguage"
+
+function Read-Lines([string]$path) {
+    if (-not $Clm) { try { return [IO.File]::ReadAllLines($path) } catch { } }
+    return @(Get-Content -LiteralPath $path -Encoding UTF8)
+}
+
+function Write-Text([string]$path, [string]$text) {
+    if (-not $Clm -and $Utf8 -ne $null) {
+        try { [IO.File]::WriteAllText($path, $text, $Utf8); return } catch { }
+    }
+    # no .NET: UTF-8 without a byte order mark is not possible with Set-Content in Windows PowerShell 5,
+    # so plain ASCII (override.cfg is ASCII; anything else becomes "?")
+    Set-Content -LiteralPath $path -Value $text -Encoding ASCII -NoNewline
+}
+# the optional multiplayer belt core (our own drop-in for the game's belt library, see beltcore.ps1)
+$BeltCorePs = Join-Path $Here "beltcore.ps1"
+if (Test-Path $BeltCorePs) { . $BeltCorePs }
 
 function Say($msg, $color = "Gray") {
     # something to say in the middle of a step: it goes on its own line
@@ -31,7 +54,7 @@ function Pause-Art($ms) { if (-not $NoPause) { Start-Sleep -Milliseconds $ms } }
 
 function Show-Art($lines, $colors) {
     for ($i = 0; $i -lt $lines.Count; $i++) {
-        Write-Host $lines[$i] -ForegroundColor $colors[[Math]::Min($i, $colors.Count - 1)]
+        Write-Host $lines[$i] -ForegroundColor $colors[$(if ($i -lt $colors.Count - 1) { $i } else { $colors.Count - 1 })]
         Pause-Art 22
     }
 }
@@ -121,17 +144,17 @@ function Find-Game {
         $libs += $r
         $vdf = Join-Path $r "steamapps\libraryfolders.vdf"
         if (Test-Path $vdf) {
-            foreach ($m in [regex]::Matches((Get-Content $vdf -Raw), '"path"\s+"([^"]+)"')) {
-                $libs += ($m.Groups[1].Value -replace "\\\\", "\")
+            # (no [regex]: Constrained Language Mode)
+            foreach ($vl in (Get-Content $vdf)) {
+                if ($vl -match '"path"\s+"([^"]+)"') { $libs += ($Matches[1] -replace "\\\\", "\") }
             }
         }
     }
     foreach ($lib in ($libs | Select-Object -Unique)) {
         $acf = Join-Path $lib "steamapps\appmanifest_$AppId.acf"
         if (Test-Path $acf) {
-            $m = [regex]::Match((Get-Content $acf -Raw), '"installdir"\s+"([^"]+)"')
-            if ($m.Success) {
-                $d = Join-Path $lib ("steamapps\common\" + $m.Groups[1].Value)
+            if ((Get-Content $acf -Raw) -match '"installdir"\s+"([^"]+)"') {
+                $d = Join-Path $lib ("steamapps\common\" + $Matches[1])
                 if (Test-Path (Join-Path $d "FindTheNeedle.exe")) { return $d }
             }
         }
@@ -149,17 +172,16 @@ function Test-OldMpMod($dir) {
 
 # override.cfg as an ordered list of sections, each a list of lines.
 function Read-Cfg($path) {
-    $sections = New-Object System.Collections.ArrayList
-    $cur = @{ name = ""; lines = (New-Object System.Collections.ArrayList) }
-    [void]$sections.Add($cur)
+    $sections = @()
+    $cur = @{ name = ""; lines = @() }
+    $sections += $cur
     if (Test-Path $path) {
-        foreach ($line in [IO.File]::ReadAllLines($path)) {
-            $m = [regex]::Match($line, '^\s*\[([^\]]+)\]\s*$')
-            if ($m.Success) {
-                $cur = @{ name = $m.Groups[1].Value; lines = (New-Object System.Collections.ArrayList) }
-                [void]$sections.Add($cur)
+        foreach ($line in (Read-Lines $path)) {
+            if ($line -match '^\s*\[([^\]]+)\]\s*$') {
+                $cur = @{ name = $Matches[1]; lines = @() }
+                $sections += $cur
             } else {
-                [void]$cur.lines.Add($line)
+                $cur.lines += $line
             }
         }
     }
@@ -168,13 +190,13 @@ function Read-Cfg($path) {
 
 function Get-Section($sections, $name) {
     foreach ($s in $sections) { if ($s.name -eq $name) { return $s } }
-    $s = @{ name = $name; lines = (New-Object System.Collections.ArrayList) }
-    [void]$sections.Add($s)
+    $s = @{ name = $name; lines = @() }
+    $script:sections += $s   # the caller's list (script scope: plain arrays, no ArrayList in Constrained Language Mode)
     return $s
 }
 
 function Write-Cfg($sections, $path) {
-    $out = New-Object System.Collections.Generic.List[string]
+    $out = @()
     foreach ($s in $sections) {
         $all = @($s.lines | ForEach-Object { $_ })
         $n = $all.Count
@@ -184,16 +206,16 @@ function Write-Cfg($sections, $path) {
         $body = @(); if ($n -gt $first) { $body = @($all[$first..($n - 1)]) }
         if ($s.name -eq "" -and $body.Count -eq 0) { continue }
         if ($s.name -ne "" -and $body.Count -eq 0) { continue }
-        if ($out.Count -gt 0) { $out.Add("") }
-        if ($s.name -ne "") { $out.Add("[" + $s.name + "]"); $out.Add("") }
-        foreach ($l in $body) { $out.Add($l) }
+        if ($out.Count -gt 0) { $out += "" }
+        if ($s.name -ne "") { $out += ("[" + $s.name + "]"); $out += "" }
+        foreach ($l in $body) { $out += $l }
     }
-    [IO.File]::WriteAllText($path, ($out -join "`r`n") + "`r`n", $Utf8)
+    Write-Text $path (($out -join "`r`n") + "`r`n")
 }
 
 # ---------------------------------------------------------------- main
 Show-Banner
-Show-Title "NEEDLE PARTY  v1.2.20  -  co-op for Find The Needle" "made by Luna7070  -  based on AleDev11's co-op mod (MIT)"
+Show-Title "NEEDLE PARTY  v1.3.1  -  co-op for Find The Needle" "made by Luna and Lolfa  -  based on AleDev11's co-op mod (MIT)"
 
 $game = Find-Game
 if ($game -eq "" -or -not (Test-Path (Join-Path $game "FindTheNeedle.exe"))) {
@@ -219,9 +241,15 @@ if (-not $Uninstall -and -not (Test-Path (Join-Path $Src "mp.gd"))) {
     Done 1
 }
 
+# belt core: uninstalling puts the game's own belt library back first (byte for byte)
+$beltStatus = ""
+if ($Uninstall -and (Get-Command Uninstall-BeltCore -ErrorAction SilentlyContinue)) {
+    try { $beltStatus = Uninstall-BeltCore $game } catch { $beltStatus = "failed: $($_.Exception.Message)" }
+}
+
 New-Item -ItemType Directory -Force $backup | Out-Null
 if (Test-Path $cfg) { Copy-Item $cfg (Join-Path $backup "override.cfg") }
-$moved = New-Object System.Collections.ArrayList   # [from, to] pairs, for the rollback
+$moved = @()   # [from, to] pairs, for the rollback
 
 try {
     Step $(if ($Uninstall) { "Moving the mod to the backup" } else { "Clearing out old versions" })
@@ -235,7 +263,7 @@ try {
                 $dest = Join-Path $backup ("mods\" + $d.Name)
                 New-Item -ItemType Directory -Force (Split-Path -Parent $dest) | Out-Null
                 Move-Item $d.FullName $dest
-                [void]$moved.Add(@($d.FullName, $dest))
+                $moved += ,@($d.FullName, $dest)
                 if (-not $isOurs) { $removed += $d.Name; Say "  removed old multiplayer mod: mods\$($d.Name)  (kept in backup)" "DarkGray" }
             }
         }
@@ -244,7 +272,7 @@ try {
     $appidTxt = Join-Path $game "steam_appid.txt"
     if (Test-Path $appidTxt) {
         Move-Item $appidTxt (Join-Path $backup "steam_appid.txt")
-        [void]$moved.Add(@($appidTxt, (Join-Path $backup "steam_appid.txt")))
+        $moved += ,@($appidTxt, (Join-Path $backup "steam_appid.txt"))
         Say "  removed old steam_appid.txt" "DarkGray"
     }
 
@@ -253,32 +281,32 @@ try {
     #    game's own settings (graphics etc.) exactly as they are
     $sections = Read-Cfg $cfg
     $auto = Get-Section $sections "autoload"
-    $keep = New-Object System.Collections.ArrayList
+    $keep = @()
     foreach ($l in $auto.lines) {
         $t = $l.Trim()
         if ($t -eq "") { continue }
         $drop = $false
         if ($t -match '^MPMod\s*=') { $drop = $true }
         elseif ($t -match '(?i)mods/[^"]*(multi|co-?op|/mp)') { $drop = $true }
-        else { foreach ($r in $removed) { if ($t -match [regex]::Escape("mods/$r/")) { $drop = $true } } }
-        if ($drop) { if ($t -notmatch 'needle_party') { Say "  removed autoload: $t" "DarkGray" } } else { [void]$keep.Add($l) }
+        else { foreach ($r in $removed) { if ($t.ToLower().Contains(("mods/$r/").ToLower())) { $drop = $true } } }
+        if ($drop) { if ($t -notmatch 'needle_party') { Say "  removed autoload: $t" "DarkGray" } } else { $keep += $l }
     }
-    if (-not $Uninstall) { [void]$keep.Add($Autoload) }
+    if (-not $Uninstall) { $keep += $Autoload }
     $auto.lines = $keep
 
     # script call stacks, so a log says which script an error or a crash came from.
     # Measured three times each with and without: no lag to see. Uninstalling takes it out.
     $debug = Get-Section $sections "debug"
-    $dk = New-Object System.Collections.ArrayList
-    foreach ($l in $debug.lines) { if ($l.Trim() -notmatch '^settings/gdscript/always_track_call_stacks\s*=') { [void]$dk.Add($l) } }
-    if (-not $Uninstall) { [void]$dk.Add("settings/gdscript/always_track_call_stacks=true") }
+    $dk = @()
+    foreach ($l in $debug.lines) { if ($l.Trim() -notmatch '^settings/gdscript/always_track_call_stacks\s*=') { $dk += $l } }
+    if (-not $Uninstall) { $dk += "settings/gdscript/always_track_call_stacks=true" }
     $debug.lines = $dk
 
     $steam = Get-Section $sections "steam"
-    $sk = New-Object System.Collections.ArrayList
-    foreach ($l in $steam.lines) { if ($l.Trim() -notmatch '^multiplayer_peer/max_channels\s*=') { [void]$sk.Add($l) } }
+    $sk = @()
+    foreach ($l in $steam.lines) { if ($l.Trim() -notmatch '^multiplayer_peer/max_channels\s*=') { $sk += $l } }
     # GodotSteam defaults to 4 channels; the mod uses more (see mp_steam.gd)
-    if (-not $Uninstall) { [void]$sk.Add("multiplayer_peer/max_channels=16") }
+    if (-not $Uninstall) { $sk += "multiplayer_peer/max_channels=16" }
     $steam.lines = $sk
     Write-Cfg $sections $cfg
 
@@ -302,6 +330,40 @@ try {
     Done 1
 }
 
+# belt core (2026-11-15, round 5). install.bat: smooth belts from the mod's scripts only, no binary
+# anywhere; a belt core of ours from a test build goes out (the game's own file back, checked).
+# install_turbo.bat (-Turbo): also the optional belt core ("Turbo": guests replay the host's belts
+# exactly), only over the game build it was made for, never with Smart App Control on or in evaluation,
+# the original back if an antivirus takes it away. Without Turbo the mod folder keeps no binary file.
+if (-not $Uninstall) {
+    $shimFile = Join-Path $mods "$ModName/native/np_beltcore.dll"
+    if ($Turbo -and (Get-Command Install-BeltCore -ErrorAction SilentlyContinue)) {
+        try { $beltStatus = Install-BeltCore $game $shimFile $SacTest } catch { $beltStatus = "failed: $($_.Exception.Message)" }
+    } elseif (Get-Command Remove-OldBeltCore -ErrorAction SilentlyContinue) {
+        try { $beltStatus = Remove-OldBeltCore $game } catch { $beltStatus = "failed: $($_.Exception.Message) - use Steam 'Verify integrity of game files'" }
+    }
+    if ($beltStatus -notin @("installed", "updated", "already")) {
+        Remove-Item -LiteralPath (Join-Path $mods "$ModName/native") -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+if ($beltStatus -ne "" -or $Turbo) {
+    $line = switch -Wildcard ($beltStatus) {
+        "installed" { "Turbo on: belt core installed" }
+        "updated" { "Turbo on: belt core updated" }
+        "already" { "Turbo on: belt core in place" }
+        "skipped: Smart*" { "Turbo not possible here: Smart App Control is on - normal smooth mode stays" }
+        "blocked*" { "Turbo blocked by antivirus: the game's own file is back - normal smooth mode stays" }
+        "skipped: this game build*" { "Turbo not possible: this game version is not supported yet - normal smooth mode stays" }
+        "restored" { "original belt file back (checked byte for byte)" }
+        "nothing to do" { "" }
+        "" { "" }
+        default { "$beltStatus" }
+    }
+    if ($line -ne "") {
+        Say "  $line" $(if ($beltStatus -like "failed*" -or $beltStatus -like "blocked*" -or $beltStatus -like "skipped*") { "Yellow" } else { "DarkGray" })
+    }
+}
+
 if ($Uninstall) {
     Show-Finish "UNINSTALLED  -  your saves are untouched" "Green"
     Say "  Backup: $backup" "DarkGray"
@@ -309,8 +371,9 @@ if ($Uninstall) {
     Done 0
 }
 Show-Finish "INSTALLED  -  TIME TO FIND THE NEEDLE!" "Green"
+Say "  NEEDLE PARTY installed - smooth belts on" "Green"
 Say "  >> Start the game FROM STEAM: the main menu shows NEEDLE PARTY." "White"
-Say "  >> Everyone in the session needs this same version (1.2.20)." "White"
+Say "  >> Everyone in the session needs this same version (1.3.1)." "White"
 Say "  >> F9 in the game opens the panel." "White"
 Say ""
 Say "  Game updates can reset override.cfg - just run install.bat again." "DarkGray"

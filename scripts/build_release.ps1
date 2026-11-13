@@ -17,6 +17,10 @@ Copy-Item (Join-Path $root "mods\needle_party") "$stage\mods\needle_party" -Recu
 # dev hooks only load files that are not shipped; make sure none slipped in
 Get-ChildItem "$stage\mods\needle_party" -Filter "mp_probe*.gd" | Remove-Item
 Get-ChildItem "$stage\mods\needle_party" -Filter "mp_selftest*.gd" | Remove-Item
+# no binary ever ships (2026-11-16, owner: no DLL, Smart App Control blocks unsigned ones):
+# the dev belt core in mods\needle_party\native stays out, and any other library too
+if (Test-Path "$stage\mods\needle_party\native") { Remove-Item "$stage\mods\needle_party\native" -Recurse -Force }
+Get-ChildItem "$stage\mods\needle_party" -Recurse -Include "*.dll", "*.so", "*.dylib", "*.exe", "*.np-orig" | Remove-Item -Force
 # the test build's log reporter and its webhook address never go in a release
 Get-ChildItem "$stage\mods\needle_party" -Filter "mp_report*.gd" | Remove-Item
 Get-ChildItem "$stage\mods\needle_party" -Filter "report.cfg" | Remove-Item
@@ -64,7 +68,7 @@ Compress-Archive -Path "$stage\*" -DestinationPath $zip
 # The same mod without installer scripts: Nexus quarantines .bat and .ps1 files
 foreach ($p in @("$stage\installer", "$stage\install.bat", "$stage\uninstall.bat")) { Remove-Item $p -Recurse -Force }
 $manual = @"
-NEEDLE PARTY $version - Find The Needle multiplayer mod. Made by Luna7070.
+NEEDLE PARTY $version - Find The Needle multiplayer mod. Made by Luna and Lolfa.
 
 EASY INSTALL (recommended): get the one-click installer here:
 https://github.com/Luna7070/needle-party/releases/latest

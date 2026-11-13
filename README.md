@@ -5,7 +5,7 @@
 **Online co-op multiplayer mod for [Find The Needle](https://store.steampowered.com/app/5160800/Find_The_Needle/) (full game).**
 Play with your friends over Steam: same haystack, same factory, shared money.
 
-![version](https://img.shields.io/badge/version-1.2.20-f5bc47?style=flat-square)
+![version](https://img.shields.io/badge/version-1.3.1-f5bc47?style=flat-square)
 ![players](https://img.shields.io/badge/players-up%20to%208-1c1814?style=flat-square)
 ![license](https://img.shields.io/badge/license-MIT-1c1814?style=flat-square)
 
@@ -18,6 +18,7 @@ Play with your friends over Steam: same haystack, same factory, shared money.
 - Steam lobbies, invite friends in game — no port forwarding
 - Everything shared and synced: pile, buildings, machines, money, tech, missions
 - Smooth movement, low ping, no stutters
+- Smooth belts for everyone: guests see the host's belts exactly, no jumping or blinking items
 - Player list with ping, chat, emotes
 - Public servers (experimental): host one that anyone with the mod can join, or pick one from the list
 - The host can kick and ban players
@@ -58,7 +59,7 @@ The first start tells you this and lets you turn it off, and the panel (F9) has 
 
 ## Credits
 
-Made by **Luna7070** for playing with a friend — vibecoded with an AI assistant.
+Made by **Luna** and **Lolfa** for playing with a friend — vibecoded with an AI assistant.
 Based on [AleDev11's co-op mod](https://github.com/AleDev11/FindTheNeedle-Coop-Mod) (MIT),
 with performance ideas from xRangerDE's *Multiplayer Enhanced* (MIT).
 Farmer model by Quaternius (CC0).

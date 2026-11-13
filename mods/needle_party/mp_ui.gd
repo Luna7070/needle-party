@@ -2,7 +2,7 @@
 # notification feed, chat (Y) and the player list.
 extends CanvasLayer
 
-# NEEDLE PARTY look (made by Luna7070): a farm machine's control panel. Warm
+# NEEDLE PARTY look (made by Luna and Lolfa): a farm machine's control panel. Warm
 # charcoal, one hay-amber accent, hairlines, square corners, spaced small
 # caps for labels, a hazard stripe. No glow, no gradients.
 const COL_TITLE := Color(0.96, 0.74, 0.28)      # hay amber: the one accent
@@ -32,6 +32,10 @@ class Hazard extends Control:
 	func _draw() -> void:
 		draw_rect(Rect2(Vector2.ZERO, size), b)
 		var h := size.y
+		# (2026-11-13) drawn before its first layout (height 0) every stripe was a flat
+		# polygon: "Invalid polygon data, triangulation failed" in the logs
+		if h < 1.0 or size.x < 1.0:
+			return
 		var x := -h
 		while x < size.x:
 			draw_colored_polygon(PackedVector2Array([Vector2(x, h), Vector2(x + h, 0),
@@ -518,6 +522,18 @@ func _build_panel() -> void:
 	_state_text = _caps("", 12, COL_TEXT, 2.0)
 	ph.add_child(_state_text)
 	head.add_child(_state_pill)
+	# (#29, 2026-11-17) settings behind a small gear (SMOOTH BELTS, anonymous logs)
+	_gear_btn = Button.new()
+	_gear_btn.flat = true
+	_gear_btn.focus_mode = Control.FOCUS_NONE
+	_gear_btn.custom_minimum_size = Vector2(34, 34)
+	_gear_btn.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
+	_gear_btn.tooltip_text = mp.t_or("np_settings", "SETTINGS")
+	_gear_btn.draw.connect(_draw_gear)
+	_gear_btn.mouse_entered.connect(_gear_btn.queue_redraw)
+	_gear_btn.mouse_exited.connect(_gear_btn.queue_redraw)
+	_gear_btn.pressed.connect(func() -> void: show_settings(not _settings_page.visible))
+	head.add_child(_gear_btn)
 	_subtitle_label = _label(mp.t("subtitle") % mp.VERSION + "   ·   " + mp.CREDIT, 13, COL_DIM)
 	v.add_child(_subtitle_label)
 	# shown only when GitHub has a newer release (see mp.gd _check_for_update)
@@ -526,7 +542,10 @@ func _build_panel() -> void:
 	v.add_child(_update_btn)
 	_build_tabs(v)
 	v.add_child(_rule())
-	var outer := v
+	_main_box = VBoxContainer.new()
+	_main_box.add_theme_constant_override("separation", 12)
+	v.add_child(_main_box)
+	var outer: VBoxContainer = _main_box
 	_friends_page = VBoxContainer.new()
 	_friends_page.add_theme_constant_override("separation", 12)
 	outer.add_child(_friends_page)
@@ -591,16 +610,68 @@ func _build_panel() -> void:
 	v = outer
 	_build_servers(v)
 	_build_manage(v)
-	_logs_btn = _button("", func() -> void: mp.set_logs(not mp.logs_on))
-	_logs_btn.visible = false
-	v.add_child(_logs_btn)
+	# (2026-11-14, test feature) belt replay as a guest (mp_belts.gd), quick A/B
+	# (2026-11-15, round 4) no button of its own any more: part of SMOOTH BELTS (dev command belt_replay)
+	# (2026-11-15, test feature) smooth belt drawing on this PC (mp_belt_draw.gd)
+	# (round 4) the one belt switch for players, on by default, its live state under it
 	_close_btn = _button(mp.t("close"), close_panel)
 	v.add_child(_close_btn)
+	# (#29, 2026-11-17) the settings page (gear in the header): SMOOTH BELTS and the logs switch
+	_settings_page = VBoxContainer.new()
+	_settings_page.add_theme_constant_override("separation", 12)
+	_settings_page.visible = false
+	_panel_body.add_child(_settings_page)
+	_settings_page.add_child(_caps(mp.t_or("np_settings", "SETTINGS"), 12, COL_TITLE, 2.0))
+	_smooth_btn = _button("", func() -> void:
+		mp.set_belt_smooth(not mp.belt_smooth)
+		refresh())
+	_settings_page.add_child(_smooth_btn)
+	_smooth_label = _label("", 13, COL_DIM, true)
+	_settings_page.add_child(_smooth_label)
+	_logs_btn = _button("", func() -> void: mp.set_logs(not mp.logs_on))
+	_logs_btn.visible = false
+	_settings_page.add_child(_logs_btn)
+	_settings_page.add_child(_rule())
+	_settings_page.add_child(_button(mp.t_or("np_back", "BACK"), func() -> void: show_settings(false)))
 	_page_tabs[1].visible = false
 	_page_tabs[2].visible = false
 
 
+# ---------------------------------------------------------------- settings page (gear)
+var _gear_btn: Button = null
+var _main_box: VBoxContainer = null
+var _settings_page: VBoxContainer = null
+
+
+func show_settings(open: bool) -> void:
+	if _settings_page == null or _main_box == null:
+		return
+	_settings_page.visible = open
+	_main_box.visible = not open
+	if _gear_btn != null:
+		_gear_btn.queue_redraw()
+	refresh()
+
+
+# a small gear: 8 teeth, a ring, a hole; amber under the mouse or while the page is open
+func _draw_gear() -> void:
+	if _gear_btn == null:
+		return
+	var c: Vector2 = _gear_btn.size / 2.0
+	var lit: bool = _gear_btn.is_hovered() or (_settings_page != null and _settings_page.visible)
+	var col: Color = COL_TITLE if lit else COL_DIM
+	for i in 8:
+		var a: float = TAU * float(i) / 8.0
+		var d := Vector2(cos(a), sin(a))
+		_gear_btn.draw_line(c + d * 6.0, c + d * 11.5, col, 4.0, true)
+	_gear_btn.draw_circle(c, 8.0, col, true, -1.0, true)
+	_gear_btn.draw_circle(c, 3.5, COL_BG, true, -1.0, true)
+
+
 # ---------------------------------------------------------------- the two pages
+var _replay_btn: Button = null
+var _smooth_btn: Button = null
+var _smooth_label: Label = null
 var _friends_page: VBoxContainer = null
 var _servers_page: VBoxContainer = null
 var _page_tabs: Array = []   # [friends lit, friends plain, servers lit, servers plain]
@@ -971,11 +1042,28 @@ func show_logs_notice() -> void:
 	var body := _label(mp.t("logs_text"), 17, COL_TEXT, true)
 	body.custom_minimum_size = Vector2(576, 0)
 	v.add_child(body)
-	var row := HBoxContainer.new()
-	row.add_theme_constant_override("separation", 10)
-	row.add_child(_button(mp.t("logs_ok"), func() -> void: _logs_answer(true), true))
-	row.add_child(_button(mp.t("logs_turn_off"), func() -> void: _logs_answer(false)))
-	v.add_child(row)
+	# (#29, 2026-11-17) one big OK; turning off stays one click, as a small dim link under it
+	v.add_child(_button(mp.t("logs_ok"), func() -> void: _logs_answer(true), true))
+	v.add_child(_small_link(mp.t("logs_turn_off"), func() -> void: _logs_answer(false)))
+
+
+# A small, dim, flat text button (no frame), centred: for rarely used switches.
+func _small_link(text: String, cb: Callable) -> Button:
+	var b := Button.new()
+	b.text = text
+	b.flat = true
+	b.focus_mode = Control.FOCUS_NONE
+	b.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	b.add_theme_font_size_override("font_size", 13)
+	b.add_theme_color_override("font_color", COL_DIM)
+	b.add_theme_color_override("font_hover_color", COL_TEXT)
+	b.add_theme_color_override("font_pressed_color", COL_TEXT)
+	b.add_theme_color_override("font_focus_color", COL_DIM)
+	var f := _font()
+	if f != null:
+		b.add_theme_font_override("font", f)
+	b.pressed.connect(cb)
+	return b
 
 
 func _logs_answer(on: bool) -> void:
@@ -1338,6 +1426,7 @@ func open_panel() -> void:
 	if _root.visible:
 		return
 	_name_edit.text = mp.my_name
+	show_settings(false)
 	_root.visible = true
 	# fade the backdrop in and let the card settle from slightly smaller
 	_root.modulate.a = 0.0
@@ -2157,6 +2246,10 @@ func _note_click() -> void:
 
 func _process_inner(delta: float) -> void:
 	_tab_tick(delta)
+	if _smooth_label != null and Engine.get_process_frames() % 30 == 0 and _smooth_label.is_visible_in_tree():
+		var st := _smooth_state_text()
+		if st != _smooth_label.text:
+			_smooth_label.text = st
 	_watch_bug_box()
 	_input_tick(delta)
 	_watch_focus()
@@ -2300,6 +2393,23 @@ func _apply_texts() -> void:
 	_chat_edit.placeholder_text = mp.t("chat_hint")
 
 
+# SMOOTH BELTS: one short line on what it does, and what it does now on this PC
+func _smooth_state_text() -> String:
+	var key := "off"
+	var bd: Variant = mp.get("belt_draw")
+	if bd != null and is_instance_valid(bd) and bd.has_method("panel_state"):
+		key = str(bd.call("panel_state"))
+	var now: String = {
+		"active": mp.t_or("belt_state_active", "Now: active"),
+		"watch": mp.t_or("belt_state_watch", "Now: active (new game version, being checked)"),
+		"update": mp.t_or("belt_state_update", "Now: off (game update - normal belts)"),
+		"problem": mp.t_or("belt_state_problem", "Now: off (problem found - normal belts)"),
+		"nocore": mp.t_or("belt_state_nocore", "Now: off (belt part not installed - normal belts)"),
+		"wait": mp.t_or("belt_state_wait", "Now: starting..."),
+	}.get(key, mp.t_or("belt_state_off", "Now: off (normal belts)"))
+	return mp.t_or("belt_smooth_help", "Smoother conveyor belts. Turns itself off if a game update breaks it.") + "\n" + now
+
+
 func refresh() -> void:
 	if _panel == null:
 		return
@@ -2329,6 +2439,11 @@ func refresh() -> void:
 	_update_servers_you(on)
 	_logs_btn.visible = mp.logs_available()
 	_logs_btn.text = mp.t("logs_on") if mp.logs_on else mp.t("logs_off")
+	if _smooth_btn != null:
+		_smooth_btn.text = mp.t_or("belt_smooth_on", "SMOOTH BELTS: ON") if mp.belt_smooth \
+			else mp.t_or("belt_smooth_off", "SMOOTH BELTS: OFF")
+	if _smooth_label != null:
+		_smooth_label.text = _smooth_state_text()
 	_name_edit.editable = not on
 	var lines := PackedStringArray()
 	if on:

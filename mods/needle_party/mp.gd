@@ -1,19 +1,19 @@
-# Find The Needle - Co-op mod, Luna7070 edition (autoload "MPMod").
+# Find The Needle - Co-op mod, Luna and Lolfa edition (autoload "MPMod").
 # Based on AleDev11's FindTheNeedle-Coop-Mod v0.19.5 and its contributors (MIT).
 # Loaded from override.cfg. Owns the ENet session, the lobby flow, the world
 # hand-off and every RPC. Per-world syncing lives in mp_world.gd.
 extends Node
 
-const VERSION := "1.2.20"  # full game (app 5160800); older versions are refused at the hello
+const VERSION := "1.3.1"  # full game (app 5160800); older versions are refused at the hello
 # Raised whenever what travels between PCs changes, also between test builds of one
 # version: two TEST zips of 1.2.19 both said "1.2.19", a guest on the newer one waited for
 # belt messages the older host never sent, and every belt jammed. Host and guest must match.
-const PROTOCOL := 11
-const WIRE_VERSION := VERSION + "p11"  # keep in step with PROTOCOL
+const PROTOCOL := 13
+const WIRE_VERSION := VERSION + "p13"  # keep in step with PROTOCOL
 # Public servers (the PUBLIC SERVERS tab, mp_ui._build_servers): off for now. The code
 # stays; set this to true to bring the tab and public lobbies back.
 const PUBLIC_SERVERS := true
-const CREDIT := "made by Luna7070"
+const CREDIT := "made by Luna and Lolfa"
 const DEFAULT_PORT := 7777
 const MAX_PEERS := 8  # players in a session, host included (Steam counts the same way)
 const WORLD_CHUNK := 60000
@@ -67,6 +67,16 @@ func _ready() -> void:
 	ui = load(base_dir + "/mp_ui.gd").new()
 	ui.mp = self
 	add_child(ui)
+	# (2026-11-15) smooth belt drawing on this PC (needs the NEEDLE PARTY belt core, setting belt_smooth)
+	belt_draw = load(base_dir + "/mp_belt_draw.gd").new()
+	belt_draw.name = "MPBeltDraw"
+	belt_draw.mp = self
+	add_child(belt_draw)
+	# (2026-11-15, test) the guest's drawer for the host's belt rows (script replay; off until mp_belts turns it on)
+	belt_show = load(base_dir + "/mp_belt_show.gd").new()
+	belt_show.name = "MPBeltShow"
+	belt_show.mp = self
+	add_child(belt_show)
 	multiplayer.peer_connected.connect(_on_peer_connected)
 	multiplayer.peer_disconnected.connect(_on_peer_disconnected)
 	multiplayer.connected_to_server.connect(_on_connected)
@@ -438,6 +448,15 @@ func in_world() -> bool:
 
 func active() -> bool:
 	return phase != Phase.OFFLINE
+
+
+# (2026-11-13) Connected right now. active() stays true while a link is being made or has
+# just dropped; an RPC then raised "Trying to call an RPC via a multiplayer peer which is
+# not connected" (a guest pressed F8 at that moment, LogDash session ef4bab84).
+func linked() -> bool:
+	var p := multiplayer.multiplayer_peer
+	return p != null and not (p is OfflineMultiplayerPeer) \
+		and p.get_connection_status() == MultiplayerPeer.CONNECTION_CONNECTED
 
 
 # ---------------------------------------------------------------- Steam session
@@ -1009,7 +1028,7 @@ func _rx_chat(text: String) -> void:
 
 func send_chat(text: String) -> void:
 	text = text.strip_edges()
-	if text == "" or not active():
+	if text == "" or not active() or not linked():
 		return
 	_rx_chat.rpc(text)
 	ui.chat_line(my_name, player_color(multiplayer.get_unique_id()), text)
@@ -1117,7 +1136,7 @@ func _rx_request_world() -> void:
 
 
 func request_resync() -> void:
-	if not active():
+	if not active() or not linked():
 		return
 	if is_host:
 		resync_all()
@@ -1147,7 +1166,10 @@ func _rx_pose(stamp: int, pos: Vector3, yaw: float, pitch: float, tool: int, cro
 # apply to everyone. They are set in memory only (never written to the guest's
 # settings file) and the guest's own come back when the session ends.
 const RULE_KEYS := ["prop_decay", "prop_cap", "belt_cap", "belt_decay", "auto_clean",
-	"auto_clean_seconds", "always_day", "t_splitter_port_r"]
+	"auto_clean_seconds", "always_day", "t_splitter_port_r",
+	# (1.2.21) game update 13 Nov 2026: cleanup of metal, the scrap cap and decay, and the
+	# cap on straw tufts on the floor. Different values deleted different things per PC.
+	"auto_clean_metal", "scrap_cap", "scrap_decay", "tuft_cap"]
 var _rules_saved := {}
 var _rules_hash := 0
 var _rules_t := 0.0
@@ -1296,6 +1318,14 @@ func _rx_stand(spot: Dictionary) -> void:
 	_trace("stand")
 	if world_sync != null:
 		world_sync.on_stand(multiplayer.get_remote_sender_id(), spot)
+
+
+# (1.2.21) the supply shop, moved like the sell stand (game update 13 Nov 2026)
+@rpc("any_peer", "call_remote", "reliable", 0)
+func _rx_shop(spot: Dictionary) -> void:
+	_trace("shop")
+	if world_sync != null:
+		world_sync.on_shop(multiplayer.get_remote_sender_id(), spot)
 
 
 # Host -> guests: the time of day and moon phase (see mp_world on_day).
@@ -1649,6 +1679,27 @@ func _rx_belts(packed: PackedByteArray, raw_size: int) -> void:
 	perf("rx_belts", Time.get_ticks_usec() - _t0_perf)
 
 
+# (belt replay, L2) A guest with belt replay on and the NEEDLE PARTY belt core asks for the belt
+# stream (mp_belts.gd): the host then sends it _rx_belt_stream right after its belts step instead
+# of _rx_belts. Reliable, on a channel of its own: a lost word (measured with unreliable words
+# under 100 +- 25 ms of jitter: 24 lost in 20 s, rows blinked for a step) is sent again, and
+# nothing else waits behind it.
+@rpc("any_peer", "call_remote", "reliable", 0)
+func _rx_belt_stream_ask(on: bool) -> void:
+	if not is_host or world_sync == null or world_sync.belts_sync == null:
+		return
+	world_sync.belts_sync.stream_ask(multiplayer.get_remote_sender_id(), on)
+
+
+@rpc("authority", "call_remote", "reliable", 5)
+func _rx_belt_stream(packed: PackedByteArray, raw_size: int) -> void:
+	var _t0_perf := Time.get_ticks_usec()
+	if world_sync == null or world_sync.belts_sync == null:
+		return
+	world_sync.belts_sync.on_belt_stream(packed, raw_size)
+	perf("rx_belt_stream", Time.get_ticks_usec() - _t0_perf)
+
+
 # ---------------------------------------------------------------- machines
 
 # unreliable for the same reason as poses; the 2 s full refresh on the
@@ -1812,6 +1863,9 @@ func _load_settings() -> void:
 		logs_on = bool(c.get_value("logs", "on", true))
 		logs_told = bool(c.get_value("logs", "told", false))
 		public_told = bool(c.get_value("mp", "public_told", false))
+		# (round 4) the old "belt_replay" key (a test switch, off by default) is not read any more
+		belt_replay_off = bool(c.get_value("mp", "belt_replay_off", false))
+		belt_smooth = bool(c.get_value("mp", "belt_smooth", true))
 		var b: Variant = c.get_value("bans", "list", {})
 		bans = b if b is Dictionary else {}
 	# the Steam persona replaces this once Steam is up (see _start_steam); the
@@ -1826,11 +1880,38 @@ func _save_settings() -> void:
 	c.set_value("logs", "on", logs_on)
 	c.set_value("logs", "told", logs_told)
 	c.set_value("mp", "public_told", public_told)
+	c.set_value("mp", "belt_replay_off", belt_replay_off)
+	c.set_value("mp", "belt_smooth", belt_smooth)
 	c.set_value("bans", "list", bans)
 	c.save(SETTINGS_PATH)
 
 
 var public_told := false  # the note about public servers was read (mp_ui show_public_notice)
+
+# (2026-11-14, test feature) Belt replay on this PC as a guest (mp_belts.gd): the host's belt
+# words played back as they are, no belts of our own. Off = the way before. Saved here only.
+# (2026-11-15, round 4) Part of SMOOTH BELTS now (the one belt switch in the panel): a guest replays
+# the host's belts whenever smooth belts are on and the belt core is there (a tested game build, or
+# on probation). belt_replay_off is a test switch only (dev command belt_replay), no button.
+var belt_replay_off := false
+var belt_replay: bool:
+	get:
+		return belt_smooth and not belt_replay_off
+# (2026-11-15, test feature) smooth belt drawing on this PC (mp_belt_draw.gd): host, single player
+# and a guest without replay. Visual only. Saved here.
+var belt_smooth := true
+var belt_draw: Node = null
+var belt_show: Node = null   # mp_belt_show.gd: the host's belt rows drawn by us (guest script replay)
+
+
+func set_belt_smooth(on: bool) -> void:
+	belt_smooth = on
+	_save_settings()
+
+
+func set_belt_replay(on: bool) -> void:
+	belt_replay_off = not on
+	_save_settings()
 
 
 func set_public_told() -> void:
@@ -1921,6 +2002,34 @@ func game_branch() -> String:
 		name = ""
 	_branch_cache = name
 	return name
+
+
+# (belt replay L2) The game's Steam build id ("26646592"): the appmanifest next to steamapps/common
+# (as game_branch), else Steam itself once it is up; "" while it cannot be known yet. The test
+# copies can pretend another build with the environment variable NP_GAME_BUILD.
+var _build_cache: Variant = null
+
+func game_build() -> String:
+	if _build_cache != null:
+		return _build_cache
+	var fake := OS.get_environment("NP_GAME_BUILD").strip_edges()
+	if fake != "":
+		_build_cache = fake
+		return fake
+	var acf := OS.get_executable_path().get_base_dir().get_base_dir().get_base_dir() + "/appmanifest_5160800.acf"
+	if FileAccess.file_exists(acf):
+		var hit := RegEx.create_from_string("\"buildid\"\\s+\"(\\d+)\"").search(FileAccess.get_file_as_string(acf))
+		if hit != null:
+			_build_cache = hit.get_string(1)
+			return _build_cache
+	if steam != null and int(steam.get("steam_id")) != 0 and Engine.has_singleton("Steam"):
+		var st: Object = Engine.get_singleton("Steam")
+		if st.has_method("getAppBuildId"):
+			var b: Variant = st.call("getAppBuildId")
+			if (b is int or b is float) and int(b) > 0:
+				_build_cache = str(int(b))
+				return _build_cache
+	return ""
 
 
 # The demo has no Steam API, so read the persona name Steam keeps on disk

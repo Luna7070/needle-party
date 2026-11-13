@@ -255,6 +255,8 @@ func shutdown() -> void:
 			_remove_copy(it)
 	_sinking.clear()
 	_boarded.clear()
+	_rp_wait.clear()
+	_rp_shown.clear()
 	_held.clear()
 	_hidden.clear()
 	_by_id.clear()
@@ -270,6 +272,21 @@ func _carry_tool() -> Variant:
 	if c == null or not is_instance_valid(c) or not c.has_signal("carry_changed"):
 		return null
 	return c
+
+
+# (2026-11-14) The carry tool keeps the item it aims at until its next look (a few frames). An
+# item taken out of the world in between (a belt or machine took it, or the other player's word
+# removed it here) is out of the tree but not freed yet, and the tool's rip check asked for its
+# position every frame: "!is_inside_tree()" from carry_tool _building_before, hundreds of times
+# in players' logs, each with a backtrace. It aims at nothing until it looks again.
+func _carry_forgets(item: Node) -> void:
+	if world == null or not is_instance_valid(world):
+		return
+	var c: Variant = _carry_tool()
+	if c == null or not ("_target" in c) or not c.has_method("_set_target"):
+		return
+	if c.get("_target") == item:
+		c.call("_set_target", null)
 
 
 func _me() -> int:
@@ -406,8 +423,16 @@ func _on_added(item: Node) -> void:
 	# Belt contents are records, not items: taking one off a belt makes a new item
 	# in our hand, and only our own belt lost the record. The host's still had it
 	# and its next list put it back here, so items could be copied for ever.
-	var took: bool = not mp.is_host and Time.get_ticks_msec() - _aim_at <= AIM_MS \
-		and _kind_of_item(String(item.item_id), item.to_state()) != NOT_A_RIDE
+	# (2026-11-14, F57) Only the record we aimed at: an item of its kind, made where it was (the
+	# game spawns a picked record at the record's pose). Any other item made in those 150 ms (a
+	# machine's brick landing here, a host item arriving) counted as "taken" too, and the host
+	# took the aimed record off its belt: a player's hay wads vanished (4 of 6 reached the stand).
+	var took := false
+	if not mp.is_host and Time.get_ticks_msec() - _aim_at <= AIM_MS and item is Node3D:
+		var k := _kind_of_item(String(item.item_id), item.to_state())
+		var aim_at: Variant = _aim.get("at")
+		took = k != NOT_A_RIDE and k == int(_aim.get("kind", NOT_A_RIDE)) and aim_at is Vector3 \
+			and (item as Node3D).global_position.distance_to(aim_at) <= AIM_NEAR_M
 	_iev(id, "spawn", item, (" from=belt seq=%d" % int(_aim.get("seq", -1))) if took else "")
 	if took:
 		mp.trace.act("ev=belt_take id=%d kind=%s seq=%d" % [_iid(id), item.item_id, int(_aim.get("seq", -1))])
@@ -432,6 +457,7 @@ func _host_seq(aim: Dictionary) -> int:
 
 
 const AIM_MS := 150     # in time, not frames: a fast PC has many frames in a click
+const AIM_NEAR_M := 1.0 # a picked record appears where it was; in AIM_MS a belt moves it ~0.3 m
 const NOT_A_RIDE := -1  # what the game answers for things that never ride as records
 var _aim := {}          # guest: the record under our crosshair: {kind, at}
 var _aim_at := -100000  # ...and when we last saw it
@@ -544,6 +570,7 @@ func _forcetron_lets_go(it: Node) -> void:
 
 
 func _on_removed(item: Node) -> void:
+	_carry_forgets(item)
 	if not item.has_meta("mp_id"):
 		return
 	var id := int(item.get_meta("mp_id"))
@@ -698,6 +725,9 @@ func _watch_belts() -> void:
 		if is_instance_valid(belt) and int(belt.get_meta("np_rows_watch", 0)) != get_instance_id():
 			belt.set_meta("np_rows_watch", get_instance_id())
 			belt.caught_record.connect(_on_row_caught.bind(belt))
+			# (belt replay) host: which row an item became, for the guests (mp_belts.note_boarded)
+			if mp.is_host:
+				belt.caught.connect(_on_caught_at.bind(belt))
 
 
 func _on_belt_caught(rb: Node) -> void:
@@ -718,6 +748,15 @@ func _on_belt_caught(rb: Node) -> void:
 
 func _unbelt(id: int) -> void:
 	_belted.erase(id)
+
+
+# Host: the belt's caught comes right after its core boarded the row (run.last_seq is it).
+func _on_caught_at(rb: Node, belt: Node) -> void:
+	if not mp.is_host or rb == null or not is_instance_valid(rb) or not rb.has_meta("mp_id"):
+		return
+	var bs: Variant = mp.world_sync.get("belts_sync") if mp.world_sync != null else null
+	if bs != null and is_instance_valid(bs) and bs.has_method("note_boarded"):
+		bs.call("note_boarded", int(rb.get_meta("mp_id")), belt)
 
 
 # ---------------------------------------------------------------- the item log (log v2)
@@ -758,9 +797,21 @@ func _why_gone(item: Node) -> String:
 		return "picked"
 	if _folded(item):
 		return "despawn"
-	if item is Node3D and _near_machine((item as Node3D).global_position):
+	if item is Node3D and _near_machine(_where(item as Node3D)):
 		return "machine"
 	return "other"
+
+
+# (1.2.21) Since the game update of 13 Nov 2026 an item can already be out of the scene
+# when its removal is reported. Its global_position then raised an engine error with a full
+# backtrace (36 in two minutes on a big yard, a hitch each). Items hang straight off the
+# prop manager, so its transform and the item's own position still say where it stood.
+func _where(item: Node3D) -> Vector3:
+	if item.is_inside_tree():
+		return item.global_position
+	if props != null and is_instance_valid(props) and props is Node3D and (props as Node3D).is_inside_tree():
+		return (props as Node3D).global_transform * item.position
+	return item.position
 
 
 func _folded(item: Node) -> bool:
@@ -770,8 +821,8 @@ func _folded(item: Node) -> bool:
 	if n == 0:
 		return false
 	var c: Node = props.get_child(n - 1)
-	return c is Node3D and String(c.name).begins_with("Fold") \
-		and (c as Node3D).global_position.distance_to((item as Node3D).global_position) < 0.05
+	return c is Node3D and String(c.name).begins_with("Fold") and (c as Node3D).is_inside_tree() \
+		and (c as Node3D).global_position.distance_to(_where(item as Node3D)) < 0.05
 
 
 const MACHINE_NEAR := 4.0
@@ -1026,6 +1077,7 @@ func _process(delta: float) -> void:
 func _process_inner(delta: float) -> void:
 	_smooth(delta)
 	_settle_sinking(delta)
+	_rp_wait_tick()
 	_held_t += delta
 	if _held_t >= HELD_TICK:
 		_held_t = 0.0
@@ -1304,6 +1356,8 @@ func on_drop(sender: int, id: int, xf: Transform3D, vel: Vector3, spin: Vector3)
 	rb.sleeping = false
 
 
+var _move_at := 0   # where the next move tick starts its walk over the items
+
 func _move_tick() -> void:
 	_claim_held_copies()
 	_claim_for_forcetron()
@@ -1312,7 +1366,16 @@ func _move_tick() -> void:
 	_watch_fetch()
 	var ids := PackedInt64Array()
 	var xfs: Array = []
-	for id in _by_id:
+	# (2026-11-13) by turns: with more than MOVE_BUDGET items on the move, the walk always
+	# started at the same items and the rest got no update until those had landed (they
+	# stood, then jumped). It now carries on where the last tick stopped.
+	var keys: Array = _by_id.keys()
+	var total := keys.size()
+	var start := _move_at % maxi(total, 1)
+	var walked := 0
+	while walked < total:
+		var id: int = keys[(start + walked) % total]
+		walked += 1
 		var it: Variant = _by_id[id]
 		# out of the tree (mid-reparent) it reads as the origin and would
 		# teleport the copy on the other side
@@ -1328,6 +1391,7 @@ func _move_tick() -> void:
 		xfs.append(xf)
 		if ids.size() >= MOVE_BUDGET:
 			break
+	_move_at = (start + walked) % maxi(total, 1)
 	if ids.size() > 0:
 		mp._rx_prop_move.rpc(ids, xfs)
 	if not _want.is_empty():
@@ -1431,14 +1495,70 @@ func on_del(ids: PackedInt64Array, why := "guest") -> void:
 
 # Guest: the host's belt took these and they are rows now (see below).
 func on_boarded(ids: PackedInt64Array) -> void:
+	var rp := _belt_replay()
 	for id in ids:
 		if _mine(id):
 			continue
 		var it: Variant = _by_id.get(id)
 		_gone(id, it, "belt_eaten")
 		_forget(id)
-		if it != null and is_instance_valid(it) and not _sink_onto_belt(it as Node3D):
+		if it == null or not is_instance_valid(it):
+			continue
+		if rp:
+			# (belt replay) the copy stays where it is until its row is on our belt (mp_belts plays
+			# the host's words back a little later): the one goes in the frame the other comes.
+			# Far from our player (belts there get a word every 2 s) it goes at once, as before.
+			if _rp_shown.has(id) or _far_from_me(it as Node3D):
+				_rp_shown.erase(id)
+				_remove_copy(it)
+			else:
+				_rp_wait[it] = [id, Time.get_ticks_msec()]
+		elif not _sink_onto_belt(it as Node3D):
 			_remove_copy(it)
+
+
+# (belt replay) items the host's belt took, waiting for their rows here; rows that came first
+const RP_WAIT_MS := 700   # (belt replay L2: a near belt's row shows within ~0.3 s even at 100 ms lag)
+const RP_NEAR_M := 40.0
+var _rp_wait := {}   # copy -> [mp id, msec]
+var _rp_shown := {}  # mp id -> msec
+
+func _belt_replay() -> bool:
+	var bs: Variant = mp.world_sync.get("belts_sync") if mp != null and mp.world_sync != null else null
+	return bs != null and is_instance_valid(bs) and bool(bs.get("replay_on"))
+
+
+# mp_belts: the row of item `id` is on our belt now (this frame).
+func rp_row_shown(id: int) -> void:
+	for it in _rp_wait.keys():
+		if int(_rp_wait[it][0]) == id:
+			_rp_wait.erase(it)
+			if is_instance_valid(it):
+				_remove_copy(it)
+			return
+	_rp_shown[id] = Time.get_ticks_msec()
+
+
+func _far_from_me(n: Node3D) -> bool:
+	var me: Variant = world.get("player") if world != null and is_instance_valid(world) else null
+	if me == null or not is_instance_valid(me) or not n.is_inside_tree():
+		return false
+	return (me as Node3D).global_position.distance_to(n.global_position) > RP_NEAR_M
+
+
+func _rp_wait_tick() -> void:
+	if _rp_wait.is_empty() and _rp_shown.is_empty():
+		return
+	var now := Time.get_ticks_msec()
+	for it in _rp_wait.keys():
+		if not is_instance_valid(it):
+			_rp_wait.erase(it)
+		elif now - int(_rp_wait[it][1]) > RP_WAIT_MS:
+			_rp_wait.erase(it)
+			_remove_copy(it)
+	for id in _rp_shown.keys():
+		if now - int(_rp_shown[id]) > RP_WAIT_MS:
+			_rp_shown.erase(id)
 
 
 # (1.2.19) An item that lands on a belt stops being an item and becomes one of the belt's

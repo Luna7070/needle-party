@@ -21,7 +21,7 @@ func _ready() -> void:
 	mp.is_host = true
 	mp.players = {
 		1: {"name": "Luna7070", "color": Color(0.95, 0.35, 0.3), "state": "world"},
-		22: {"name": "LOLFA", "color": Color(0.3, 0.65, 0.98), "state": "world"},
+		22: {"name": "P1", "color": Color(0.3, 0.65, 0.98), "state": "world"},
 		33: {"name": "HayKing", "color": Color(0.4, 0.85, 0.4), "state": "loading"},
 	}
 	mp.pings = {1: 0, 22: 38, 33: 112}
@@ -47,3 +47,4 @@ func _save(path: String) -> void:
 	var w := 1600
 	img.resize(w, int(float(img.get_height()) * w / img.get_width()), Image.INTERPOLATE_LANCZOS)
 	img.save_png(path)
+

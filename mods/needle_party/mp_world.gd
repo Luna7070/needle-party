@@ -79,6 +79,9 @@ const OR_A := ["needle_taken", "discovered"]
 const ADD_D := ["depot_stock", "gifts"]
 const HOST_ABS := ["run_secs", "lot_tier", "hay_initial", "money_peak", "pile_cleared",
 	"first_needle_secs", "first_clear_secs",
+	# (1.2.21) game update 13 Nov 2026: an old save is sent round the metal detector
+	# mission first; where it goes back to afterwards follows the host
+	"mission_detour_to",
 	# 1.1.2: the yard's story and records follow the host as well
 	"has_hatch", "key_taken", "hatch_open", "completed", "case_goal", "endings"]
 # records anyone can set: the best of everybody's, both ways. The sale and how many
@@ -131,6 +134,25 @@ var _frozen := false  # stop sending (pile swap in progress, waiting for a reloa
 var _pile_seed := 0
 
 
+# (2026-11-14) One part of the world sync. A part that does not load (a game build it does not
+# fit: the demo's 1.2.18 log had mp_props and mp_contracts failing) is left out, and the others
+# still start: before, add_child(null) and start() on nothing ended _ready there, and every part
+# after it (belts, machines ...) never ran. The callers all check for null already.
+func _module(file: String, node_name: String) -> Node:
+	var scr: Variant = load(mp.base_dir + "/" + file)
+	if not (scr is Script) or not (scr as Script).can_instantiate():
+		push_warning("[MPMod] %s did not load in this game build: that part of the sync is off" % file)
+		return null
+	var m: Variant = (scr as Script).new()
+	if not (m is Node):
+		return null
+	(m as Node).name = node_name
+	add_child(m as Node)
+	if (m as Node).has_method("start"):
+		(m as Node).call("start", mp, world)
+	return m as Node
+
+
 func _ready() -> void:
 	field = world.get("field")
 	builds = world.get("builds")
@@ -139,34 +161,13 @@ func _ready() -> void:
 	_me = _avatar_script.new()
 	_me.setup_local(player, mp)
 	world.add_child(_me)
-	props_sync = (load(mp.base_dir + "/mp_props.gd") as Script).new()
-	props_sync.name = "MPProps"
-	add_child(props_sync)
-	props_sync.start(mp, world)
-	belts_sync = (load(mp.base_dir + "/mp_belts.gd") as Script).new()
-	belts_sync.name = "MPBelts"
-	add_child(belts_sync)
-	belts_sync.start(mp, world)
-	machines_sync = (load(mp.base_dir + "/mp_machines.gd") as Script).new()
-	machines_sync.name = "MPMachines"
-	add_child(machines_sync)
-	machines_sync.start(mp, world)
-	strands_sync = (load(mp.base_dir + "/mp_strands.gd") as Script).new()
-	strands_sync.name = "MPStrands"
-	add_child(strands_sync)
-	strands_sync.start(mp, world)
-	contracts_sync = (load(mp.base_dir + "/mp_contracts.gd") as Script).new()
-	contracts_sync.name = "MPContracts"
-	add_child(contracts_sync)
-	contracts_sync.start(mp, world)
-	boards_sync = (load(mp.base_dir + "/mp_boards.gd") as Script).new()
-	boards_sync.name = "MPBoards"
-	add_child(boards_sync)
-	boards_sync.start(mp, world)
-	tables_sync = (load(mp.base_dir + "/mp_tables.gd") as Script).new()
-	tables_sync.name = "MPTables"
-	add_child(tables_sync)
-	tables_sync.start(mp, world)
+	props_sync = _module("mp_props.gd", "MPProps")
+	belts_sync = _module("mp_belts.gd", "MPBelts")
+	machines_sync = _module("mp_machines.gd", "MPMachines")
+	strands_sync = _module("mp_strands.gd", "MPStrands")
+	contracts_sync = _module("mp_contracts.gd", "MPContracts")
+	boards_sync = _module("mp_boards.gd", "MPBoards")
+	tables_sync = _module("mp_tables.gd", "MPTables")
 	if field != null:
 		field.cells_redrawn.connect(_on_cells_redrawn)
 	if builds != null:
@@ -182,6 +183,9 @@ func _ready() -> void:
 
 
 func shutdown() -> void:
+	if _key_ghost != null and is_instance_valid(_key_ghost):
+		_key_ghost.queue_free()
+	_key_ghost = null
 	if Tech.tech_changed.is_connected(_on_tech_changed):
 		Tech.tech_changed.disconnect(_on_tech_changed)
 	if GameState.pile_replaced.is_connected(_on_pile_replaced):
@@ -356,6 +360,40 @@ func _leave_missions_to_host() -> void:
 
 var _refreeze_t := 0.0
 
+
+# (2026-11-13) The other player took a building down (or a resync rebuilt the yard) while our
+# dismantle tool was pointing at it. The game's tool kept the old node in its hover/mark lists
+# and asked it for its belt ports every frame: "Condition !is_inside_tree()" with a full
+# backtrace each time (827 in 17 logs, a hitch each). Nodes that left the scene are dropped
+# from those lists (checked every frame, a few property reads); the tool picks its target
+# again on the next frame.
+const TOOL_NODE_VARS := ["_hover", "_wreck"]
+const TOOL_LIST_VARS := ["_hover_group", "_wreck_group", "_marked"]
+
+func _tidy_build_tool() -> void:
+	var pl: Variant = world.get("player") if world != null and is_instance_valid(world) else null
+	if pl == null or not is_instance_valid(pl) or not ("build" in pl):
+		return
+	var bt: Variant = pl.get("build")
+	if not (bt is Object) or not is_instance_valid(bt):
+		return
+	for v in TOOL_NODE_VARS:
+		if not (v in bt):
+			continue
+		var n: Variant = (bt as Object).get(v)
+		if n != null and (not is_instance_valid(n) or not (n as Node).is_inside_tree()):
+			(bt as Object).set(v, null)
+	for v in TOOL_LIST_VARS:
+		if not (v in bt):
+			continue
+		var arr: Variant = (bt as Object).get(v)
+		if not (arr is Array):
+			continue
+		for i in range((arr as Array).size() - 1, -1, -1):
+			var m: Variant = (arr as Array)[i]
+			if m == null or not is_instance_valid(m) or not (m as Node).is_inside_tree():
+				(arr as Array).remove_at(i)
+
 func _is_client() -> bool:
 	return mp.active() and not mp.is_host
 
@@ -369,6 +407,7 @@ func _process(delta: float) -> void:
 
 
 func _process_inner(delta: float) -> void:
+	_ease_host_key(delta)
 	if not mp.active() or multiplayer.multiplayer_peer == null:
 		return
 	if multiplayer.multiplayer_peer.get_connection_status() != MultiplayerPeer.CONNECTION_CONNECTED:
@@ -377,6 +416,7 @@ func _process_inner(delta: float) -> void:
 	if _pose_t >= 1.0 / POSE_HZ:
 		_pose_t = 0.0
 		_send_pose()
+	_tidy_build_tool()
 	if _frozen:
 		return
 	if not _tech_queue.is_empty():
@@ -446,17 +486,23 @@ func _send_pose() -> void:
 	_poll_emote()
 
 
-# ---------------------------------------------------------------- sell stand
+# ---------------------------------------------------------------- sell stand and supply shop
 # Moving the sell stand changes Cfg.stand_spot, which is not a building, so a
 # moved stand stayed where it was for everyone else. Whoever moves it sends
-# the spot; the others put their stand up there with the game's own call, and
-# the host passes it on.
+# the spot; the others take theirs down and put it up there with the game's own
+# calls, and the host passes it on.
+# (1.2.21) The game update of 13 Nov 2026 added the supply shop, moved the same
+# way through Cfg.shop_spot; it travels the same way (_rx_shop). The spot is
+# {"x", "y", "z", "yaw"} or {"gone": true}. Before 1.2.21 the receiving side
+# looked for a Vector3 in it, found none, and only ever changed Cfg: a moved or
+# taken-down stand showed on the other PC after the next load only.
 # (Turning a belt round needs nothing extra: the game reports it as a building
 # change and the building sync carries it, tested both ways. A separate belt
 # message tried in 1.2.0 development made a second belt for a moment.)
 const WATCH_TICK := 0.5
+const SPOTS := {"stand": "stand_spot", "shop": "shop_spot"}
 var _watch_t := 0.0
-var _stand_seen: Variant = null
+var _spot_seen := {}   # kind -> the spot as last seen here
 var _applying_watch := false
 
 
@@ -465,36 +511,83 @@ func _watch_tick(delta: float) -> void:
 	if _watch_t < WATCH_TICK:
 		return
 	_watch_t = 0.0
-	var stand: Variant = Cfg.get("stand_spot")
-	if stand is Dictionary:
-		if _stand_seen != null and stand != _stand_seen and not _applying_watch 		and not (stand as Dictionary).is_empty():
-			if mp.is_host:
-				mp._rx_stand.rpc(stand)
-			else:
-				mp._rx_stand.rpc_id(1, stand)
-		_stand_seen = (stand as Dictionary).duplicate(true)
+	for kind: String in SPOTS:
+		var spot: Variant = Cfg.get(SPOTS[kind])   # null on a game build without it
+		if not (spot is Dictionary):
+			continue
+		var seen: Variant = _spot_seen.get(kind)
+		if seen != null and spot != seen and not _applying_watch \
+				and not (spot as Dictionary).is_empty():
+			_send_spot(kind, spot, 1 if not mp.is_host else 0)
+		_spot_seen[kind] = (spot as Dictionary).duplicate(true)
+
+
+# to = 0: everyone (the host), 1: the host (a guest)
+func _send_spot(kind: String, spot: Dictionary, to: int) -> void:
+	var rpc_fn: Callable = mp._rx_stand if kind == "stand" else mp._rx_shop
+	if to == 0:
+		rpc_fn.rpc(spot)
+	else:
+		rpc_fn.rpc_id(to, spot)
 
 
 func on_stand(sender: int, spot: Dictionary) -> void:
-	var cur: Variant = Cfg.get("stand_spot")
-	if cur is Dictionary and cur == spot:
+	_on_spot("stand", sender, spot)
+
+
+func on_shop(sender: int, spot: Dictionary) -> void:
+	_on_spot("shop", sender, spot)
+
+
+func _on_spot(kind: String, sender: int, spot: Dictionary) -> void:
+	var key: String = SPOTS[kind]
+	var cur: Variant = Cfg.get(key)
+	if cur == null or (cur is Dictionary and cur == spot):
 		return
-	# the spot is a position and a direction; whatever the keys are called
-	var at: Variant = null
-	var yaw := 0.0
-	for k in spot:
-		if spot[k] is Vector3 and at == null:
-			at = spot[k]
-		elif typeof(spot[k]) == TYPE_FLOAT and String(k).to_lower().contains("yaw"):
-			yaw = float(spot[k])
 	_applying_watch = true
-	Cfg.set("stand_spot", spot.duplicate(true))
-	if at != null and world.has_method("_put_up_stand"):
-		world.call("_put_up_stand", at, yaw)
-	_stand_seen = spot.duplicate(true)
+	_put_spot(kind, spot)
+	Cfg.set(key, spot.duplicate(true))   # the game's calls set it too; this makes sure
+	_spot_seen[kind] = spot.duplicate(true)
 	_applying_watch = false
 	if mp.is_host and sender != 1:
-		mp._rx_stand.rpc(spot)
+		_send_spot(kind, spot, 0)
+
+
+# Taken down and put up again through the game's own handlers, the same ones its
+# build menu uses, so it comes back exactly as when a player moves it here.
+func _put_spot(kind: String, spot: Dictionary) -> void:
+	if world == null or builds == null:
+		return
+	var gone := bool(spot.get("gone", false))
+	var at: Variant = null
+	var yaw := float(spot.get("yaw", 0.0))
+	if spot.has("x") and spot.has("y") and spot.has("z"):
+		at = Vector3(float(spot["x"]), float(spot["y"]), float(spot["z"]))
+	else:
+		for k in spot:   # an older shape: a Vector3 under some key
+			if spot[k] is Vector3:
+				at = spot[k]
+				break
+	if not gone and at == null:
+		return
+	var node: Variant = world.get(kind)
+	var standing := node is Node3D and is_instance_valid(node)
+	if standing and not gone:
+		var n := node as Node3D
+		if n.global_position.distance_to(at as Vector3) < 0.01 \
+				and absf(angle_difference(n.global_rotation.y, yaw)) < 0.001:
+			return   # already there
+	if standing:
+		var down := "_take_%s_down" % kind
+		if builds.has_method(down):
+			builds.call(down)
+	if gone:
+		return
+	var wanted := "_on_%s_wanted" % kind
+	if world.has_method(wanted):
+		world.call(wanted, at, yaw)
+	elif world.has_method("_put_up_%s" % kind):
+		world.call("_put_up_%s" % kind, at, yaw)
 
 
 # ---------------------------------------------------------------- day and night
@@ -991,7 +1084,9 @@ func flush_builds_now() -> void:
 
 func _flush_builds() -> void:
 	_builds_dirty = false
+	var tb := Time.get_ticks_usec()
 	var cur := _scan_builds()
+	mp.perf("builds.scan", Time.get_ticks_usec() - tb)
 	var adds: Array = []
 	var removes: Array = []
 	for k in cur:
@@ -1105,14 +1200,18 @@ func on_builds(adds: Array, removes: Array) -> void:
 		_flush_builds()
 	_applying_builds = true
 	mp.trace.note("builds begin: %s added, %s removed" % [_types_of(adds), _types_of(removes)])
+	var tb := Time.get_ticks_usec()
 	for d in removes:
 		if d is Dictionary:
 			var n := _find_building(d)
 			if n != null:
 				_demolish(n)
+	mp.perf("builds.remove", Time.get_ticks_usec() - tb)
 	if not adds.is_empty():
 		await _add_buildings(adds)
+	tb = Time.get_ticks_usec()
 	_bkeys = _scan_builds()
+	mp.perf("builds.scan", Time.get_ticks_usec() - tb)
 	_builds_dirty = false
 	_applying_builds = false
 	mp.trace.note("builds end")
@@ -1128,12 +1227,47 @@ func _types_of(dicts: Array) -> String:
 	return "[" + ",".join(out) + "]"
 
 
+const NEAR_FIND_M := 1.0
+
+func _near_buildings(d: Dictionary) -> Array:
+	var out: Array = []
+	var da: Variant = d.get("a")
+	var db: Variant = d.get("b")
+	var dp: Variant = d.get("position")
+	if not (da is Vector3 and db is Vector3) and not (dp is Vector3):
+		return out
+	for n in builds.every_placed():
+		if not is_instance_valid(n) or n.is_queued_for_deletion() or not n.has_method("to_dict"):
+			continue
+		if da is Vector3 and db is Vector3:
+			var na: Variant = n.get("a") if "a" in n else null
+			var nb: Variant = n.get("b") if "b" in n else null
+			if na is Vector3 and nb is Vector3 and (na as Vector3).distance_to(da) <= NEAR_FIND_M \
+			and (nb as Vector3).distance_to(db) <= NEAR_FIND_M:
+				out.append(n)
+		elif n is Node3D:
+			var p3 := (n as Node3D).position
+			var g3 := (n as Node3D).global_position if (n as Node3D).is_inside_tree() else p3
+			if p3.distance_to(dp) <= NEAR_FIND_M or g3.distance_to(dp) <= NEAR_FIND_M:
+				out.append(n)
+	return out
+
+
 # Only rounding, not a neighbour: if the building is really gone, take nothing down.
 const FIND_SLACK := 0.15
 
 func _find_building(d: Dictionary) -> Node3D:
 	var want := str(d.get("type", ""))
 	var key := _bkey(d)
+	# (2026-11-13) Asking every building of the yard for its to_dict() to find one took
+	# 10-18 ms per building the other player took down. First only the ones standing where
+	# this one stands (a belt by its two ends, anything else by its position): the exact
+	# match is among them. Not found that way: the full search below, as before.
+	var near := _near_buildings(d)
+	for n in near:
+		var nd: Dictionary = n.to_dict()
+		if str(nd.get("type", "")) == want and _bkey(nd) == key:
+			return n
 	var best: Node3D = null
 	var best_err := FIND_SLACK
 	for n in builds.every_placed():
@@ -1260,6 +1394,28 @@ func _belt_between(a: Vector3, b: Vector3) -> Node:
 	return best
 
 
+# Buildings that never sit at a belt end or a machine port: placing one changes no belt joint.
+const JUNCTION_FREE := ["power_pole", "power_box", "wall_outlet", "yard_light", "work_lamp", "yard_fan",
+	"candle", "bubba_statue", "fixture", "paint_board", "railing", "roof", "stair", "wall",
+	"water_main", "water_splitter", "underground_pipe", "pipe_valve", "jump_pad", "landing_pad"]
+
+# Lists whose buildings are belts or sit at belt ends themselves.
+const BELT_LISTS := ["conveyors", "corners", "splitters", "joiners", "hay_lifts", "hay_stairs",
+	"belt_gates", "belt_poles"]
+const BELT_PORTS := ["port_in", "port_out", "intake_port", "port_brick", "outfeed_port"]
+
+func _any_belt_side(nodes: Array) -> bool:
+	for n in nodes:
+		if not (n is Object) or not is_instance_valid(n):
+			continue
+		if "run" in n:
+			return true   # a belt of some kind (BeltPath)
+		for m in BELT_PORTS:
+			if (n as Object).has_method(m):
+				return true
+	return false
+
+
 func _add_rows(dicts: Array) -> void:
 	var parked := {}
 	for a in BUILD_ARRAYS + BUILD_EXTRAS:
@@ -1282,16 +1438,24 @@ func _add_rows(dicts: Array) -> void:
 			builds.set(t, ((table as Object).get_script() as Script).new(builds))
 	var slice: int = builds.restore_slice_usec
 	builds.restore_slice_usec = 0
+	var tb := Time.get_ticks_usec()
 	await builds.from_array(dicts)
+	mp.perf("builds.load", Time.get_ticks_usec() - tb)
 	builds.restore_slice_usec = slice
 	for t in tables_kept:
 		builds.set(t, tables_kept[t])
+	var belt_side := false   # see JUNCTION_FREE below
+	var made_any := false
 	for a in parked:
 		var arr: Array = builds.get(a)
 		var fresh := arr.duplicate()
 		arr.clear()
 		arr.append_array(parked[a])
 		arr.append_array(fresh)
+		if not fresh.is_empty():
+			made_any = true
+			if not belt_side:
+				belt_side = BELT_LISTS.has(a) or _any_belt_side(fresh)
 	if shells != null and is_instance_valid(shells):
 		var made: Variant = builds.get("_enclosed_visuals")
 		if made != null and is_instance_valid(made) and made != shells:
@@ -1305,13 +1469,38 @@ func _add_rows(dicts: Array) -> void:
 		for k in on_show_kept:
 			if not now_show.has(k):
 				now_show[k] = on_show_kept[k]
+	tb = Time.get_ticks_usec()
 	if builds.has_method("_rebuild_enclosed_visuals"):
 		builds._rebuild_enclosed_visuals()
-	builds.rebuild_junctions()
+	mp.perf("builds.enclosed", Time.get_ticks_usec() - tb)
+	tb = Time.get_ticks_usec()
+	# (2026-11-13) every belt joint of the yard was worked out again (20-28 ms on the test
+	# yard) for each building the other player put down, a pole or a lamp as much as a belt.
+	# Only what can sit at a belt end needs it.
+	# (2026-11-14) and decided by what was really made: a belt, or a building with a belt port
+	# (port_in/_out, intake/brick/outfeed port, as the game's machine_belts_of asks). A cabinet,
+	# radar, drone or arm has none: it cost the other player 16-29 ms for nothing. A row whose
+	# node is not to be found (nothing made) still counts by its type, as before.
+	var all_free := true
+	for d in dicts:
+		if not (d is Dictionary) or not JUNCTION_FREE.has(str((d as Dictionary).get("type", ""))):
+			all_free = false
+			break
+	if all_free:
+		belt_side = false
+	elif not made_any:
+		belt_side = true   # nothing found in the lists we know: do it the old, safe way
+	if belt_side:
+		builds.rebuild_junctions()
+	mp.perf("builds.junctions", Time.get_ticks_usec() - tb)
+	tb = Time.get_ticks_usec()
 	builds.rebuild_water_joints()
 	builds.fit_posts_to_decks()
 	builds.share_joints()
+	mp.perf("builds.joints", Time.get_ticks_usec() - tb)
+	tb = Time.get_ticks_usec()
 	builds.changed.emit()
+	mp.perf("builds.changed", Time.get_ticks_usec() - tb)
 
 
 # Stopping a machine takes more than process_mode, and since the factory clock
@@ -1443,6 +1632,59 @@ func _dict_add(target: Dictionary, delta: Dictionary) -> void:
 			target[k] = n
 
 
+# (2026-11-14) The hatch key at the end of a run is the host's (it forges it, see the cabinet in
+# mp_machines; it is no item of the item sync). A guest saw nothing of it. Now it sees where it
+# is: a key model only (no body, not in the key group, nothing to pick up or turn), eased to the
+# host's key four times a second, gone when the host's is.
+var _key_ghost: Node3D = null
+var _key_goal := Transform3D()
+
+func _show_host_key(xf: Variant) -> void:
+	if mp.is_host:
+		return
+	if not (xf is Transform3D):
+		if _key_ghost != null and is_instance_valid(_key_ghost):
+			_key_ghost.queue_free()
+		_key_ghost = null
+		return
+	_key_goal = xf
+	if _key_ghost != null and is_instance_valid(_key_ghost):
+		return
+	if world == null or not is_instance_valid(world):
+		return
+	var own: Variant = world.get("hatch_key")
+	if own is Node3D and is_instance_valid(own):
+		return  # a real one here already
+	var cls: Variant = null
+	for c in ProjectSettings.get_global_class_list():
+		if String(c.get("class", "")) == "HatchKey":
+			cls = load(String(c.get("path", "")))
+			break
+	if not (cls is Script):
+		return
+	var has_parts := false
+	for m in (cls as Script).get_script_method_list():
+		if String(m.get("name", "")) == "build_parts":
+			has_parts = true
+			break
+	if not has_parts:
+		return
+	_key_ghost = Node3D.new()
+	_key_ghost.name = "MPHostKey"
+	(cls as Object).call("build_parts", _key_ghost)
+	world.add_child(_key_ghost)
+	_key_ghost.global_transform = xf
+
+
+func _ease_host_key(delta: float) -> void:
+	if _key_ghost == null or not is_instance_valid(_key_ghost) or not _key_ghost.is_inside_tree():
+		return
+	var cur := _key_ghost.global_transform
+	var k := clampf(delta * 12.0, 0.0, 1.0)
+	_key_ghost.global_transform = Transform3D(cur.basis.orthonormalized().slerp(_key_goal.basis.orthonormalized(), k),
+		cur.origin.lerp(_key_goal.origin, k))
+
+
 func _state_tick() -> void:
 	if mp.is_host:
 		var snap := _capture_state()
@@ -1452,6 +1694,11 @@ func _state_tick() -> void:
 		if Time.get_ticks_msec() - _income_sent_at >= 2000:
 			_income_sent_at = Time.get_ticks_msec()
 			snap["income_log"] = _income_ages()
+		# (2026-11-14) where the hatch key is (null: there is none). Only the host forges and carries
+		# it; a guest shows it (see _show_host_key). A build without it ignores the extra entry.
+		var hk: Variant = world.get("hatch_key") if world != null and is_instance_valid(world) else null
+		snap["key_xf"] = (hk as Node3D).global_transform \
+				if is_instance_valid(hk) and hk is Node3D and (hk as Node3D).is_inside_tree() else null
 		for pid in mp.players.keys():
 			if pid != 1 and str(mp.players[pid].get("state", "")) == "world":
 				mp._rx_state_snap.rpc_id(pid, int(_peer_ack.get(pid, 0)), snap)
@@ -1684,6 +1931,8 @@ func on_state_snap(ack: int, snap: Dictionary) -> void:
 			_best_sent[f] = snap[f]  # what the host has, not what we have
 	if snap.get("income_log") is Array:
 		_income_from_ages(snap["income_log"])
+	if snap.has("key_xf"):
+		_show_host_key(snap["key_xf"])
 	_emit_state_signals(before)
 
 
@@ -1763,6 +2012,18 @@ func _flush_tech() -> void:
 	_tech_paid.clear()
 
 
+# (2026-11-14) Money handed back for something paid twice or not delivered: the game's own
+# give_back(), which hands back nothing in a sandbox run (nothing was taken there: spend_money
+# lets it through for free). Adding to money directly made money out of nothing in a sandbox
+# (test: two players buy the same card at once, +1000 on both PCs).
+func _give_back(amount: float) -> void:
+	if GameState.has_method("give_back"):
+		GameState.give_back(amount)
+	else:
+		GameState.money += amount
+		GameState.money_changed.emit(GameState.money)
+
+
 func on_tech(sender: int, id: String, rank: int, paid: bool = false) -> void:
 	var have := int(Tech.ranks.get(id, 0))
 	if rank > 0 and rank <= have:
@@ -1772,8 +2033,7 @@ func on_tech(sender: int, id: String, rank: int, paid: bool = false) -> void:
 			var cost := float(TechTree.cost_at(id, rank - 1))
 			if cost > 0.0:
 				tech_refunds += 1
-				GameState.money += cost
-				GameState.money_changed.emit(GameState.money)
+				_give_back(cost)
 			# the parts it took from the depot too
 			var parts: Variant = Tech.parts_at(id, rank - 1)
 			if parts is Dictionary and not (parts as Dictionary).is_empty():
@@ -2003,8 +2263,7 @@ func host_new_pile_for_client(pid: int, on_credit: bool = false) -> void:
 				GameState.debt = maxf(0.0, GameState.debt - GameState.credit_stack_fee())
 				GameState.debt_changed.emit(GameState.debt)
 			else:
-				GameState.money += GameState.next_stack_fee()
-				GameState.money_changed.emit(GameState.money)
+				_give_back(GameState.next_stack_fee())
 		mp.send_world(pid)
 
 
@@ -2177,6 +2436,11 @@ func _apply_needle(kind: String, idx: int, pos: Vector3, holder: int) -> void:
 			if body != null:
 				body.global_position = pos
 				body.linear_velocity = Vector3.ZERO
+			elif _needle_leaving(live, idx):
+				# (2026-11-13) its old body is still being freed this frame: the game counts
+				# it as there and refused the new one ("needle N is already in the world"),
+				# so the needle was missing here. Put it in once the old one is gone.
+				_reveal_soon(idx, pos)
 			else:
 				live.reveal_needle(idx, pos)
 			_needles[idx] = "free"
@@ -2193,6 +2457,26 @@ func _apply_needle(kind: String, idx: int, pos: Vector3, holder: int) -> void:
 			if body != null:
 				live.consume_needle(body)
 			_needles.erase(idx)
+
+
+func _needle_leaving(live: Object, idx: int) -> bool:
+	for b in live.get("needles"):
+		if is_instance_valid(b) and b.is_queued_for_deletion() and int(b.get_meta("needle_index", -1)) == idx:
+			return true
+	return false
+
+
+func _reveal_soon(idx: int, pos: Vector3) -> void:
+	for i in 3:
+		await get_tree().process_frame
+		var live := _live()
+		if live == null or _frozen:
+			return
+		if _needles.get(idx) != "free" or _needle_bodies().has(idx):
+			return
+		if not _needle_leaving(live, idx):
+			live.reveal_needle(idx, pos)
+			return
 
 
 # A guest left while holding a needle: put it down where they were standing, so

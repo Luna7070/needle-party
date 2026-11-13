@@ -23,6 +23,8 @@ const TABLES := ["machine_paint", "tags", "routes", "clocks", "plugs", "groups",
 	# GameState settings either player can change: the depot's per-item limits
 	# and the items it refuses
 	"gs:depot_limits", "gs:depot_refused",
+	# (1.2.21) game update 13 Nov 2026: the depot's per-item "no drones" switch
+	"gs:depot_no_drones",
 	# game 15.x: the same settings, but each depot keeps its own (Depot.limits,
 	# Depot.refused). Only one of the two pairs exists in a given game build;
 	# the other reads as null and is skipped.

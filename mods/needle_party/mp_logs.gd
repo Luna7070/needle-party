@@ -17,6 +17,9 @@ extends Node
 #   state.txt     money, research, contract, depot, the check of the building list
 #   crash.txt     after a crash, at the next start: the game's own findings about how the
 #                 run ended (not the log copy it makes, which can hold names)
+#   (2026-11-15) report.txt also has "== belts": the belt core and its version, smooth belts and
+#                 belt replay on or off and why (reason codes), probation and its result, and one
+#                 line a minute on how the belts did (numbers only)
 #
 # The bug key (F11): the player writes one line about what went wrong, and a log goes out
 # at once from every PC in the session, with that line (names blanked) at the top.
@@ -522,7 +525,20 @@ func _session_tag(mark: String) -> String:
 func _info(tag: String, w: Dictionary) -> Dictionary:
 	return {"public": _public(), "tag": tag, "world": w, "players": mp.players.size(), "host": mp.is_host, "fps": _fps(),
 		"worst": _f_max / 1000, "over100": _over[3], "up": (Time.get_ticks_msec() - _started) / 60000,
-		"errors_before": _errors_seen, "game": _game_build(), "game_short": _short_build(), "branch": _branch}
+		"errors_before": _errors_seen, "game": _game_build(), "game_short": _short_build(), "branch": _branch,
+		"belt": _belt_meta()}
+
+
+# (2026-11-15) the belt feature in a few fixed keys (mp_belt_draw.gd): reason codes, no free text
+func _belt_meta() -> Dictionary:
+	var bd: Variant = mp.get("belt_draw")
+	if bd == null or not is_instance_valid(bd) or not bd.has_method("health_stats"):
+		return {}
+	var h: Dictionary = bd.call("health_stats")
+	var rs: Variant = bd.call("_replay_state") if bd.has_method("_replay_state") else ["off", ""]
+	return {"core": str(h.get("core", "")), "core_skip": str(h.get("core_skip", "")), "smooth": str(h.get("state", "")),
+		"replay": str((rs as Array)[0]) if rs is Array and (rs as Array).size() > 0 else "",
+		"panel": str(bd.call("panel_state")) if bd.has_method("panel_state") else ""}
 
 
 # What shows in the channel: big lobbies and big worlds must be impossible to miss.
@@ -609,6 +625,11 @@ func _facts(mark: String, w: Dictionary) -> String:
 	s.append("== world")
 	s.append(str(w))
 	s.append("")
+	var bd: Variant = mp.get("belt_draw")
+	if bd != null and is_instance_valid(bd) and bd.has_method("report_lines"):
+		s.append("== belts")
+		s.append_array(bd.call("report_lines"))
+		s.append("")
 	s.append("== frames since the last log")
 	s.append("frames %d  fps %.0f  average %.2f ms  worst %.1f ms" % [_frames, _fps(), float(_f_sum) / maxf(float(_frames), 1.0) / 1000.0, _f_max / 1000.0])
 	s.append("over 16 ms: %d  33 ms: %d  50 ms: %d  100 ms: %d  250 ms: %d" % _over)
@@ -794,6 +815,13 @@ func _meta(info: Dictionary, errors: int) -> String:
 		"fps": roundi(float(info.get("fps", 0.0))), "worst_ms": int(info.get("worst", 0)),
 		"frames_over_100ms": int(info.get("over100", 0)), "errors_new": maxi(errors - int(info.get("errors_before", 0)), 0),
 		"errors_in_log": errors, "up_min": int(info.get("up", 0))}
+	var bm: Variant = info.get("belt", {})
+	if bm is Dictionary and not (bm as Dictionary).is_empty():
+		m["belt_core"] = str(bm.get("core", ""))
+		m["belt_core_skip"] = str(bm.get("core_skip", ""))
+		m["belt_smooth"] = str(bm.get("smooth", ""))
+		m["belt_replay"] = str(bm.get("replay", ""))
+		m["belt_panel"] = str(bm.get("panel", ""))
 	if kind == "crash":
 		m["crash_reason"] = str(info.get("why", ""))
 	if bug == "mine":

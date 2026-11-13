@@ -2,6 +2,88 @@
 
 All versions need every player on the same version; older ones are refused when joining.
 
+## 1.3.1 (17 November 2026)
+
+- Fixed: a guest's exact belts switched off for the rest of the session when the host's game stood
+  still for a few seconds (for example while it prepares graphics after building a machine), or when
+  few belts were moving. They now come back on by themselves.
+- Fixed: when the host changed a machine (a cabinet door, a radar's tier, a switch) right after a guest
+  changed the same one, the guest's old setting came back and undid the host's change.
+- New settings page: the gear at the top right of the panel (F9) has SMOOTH BELTS and the anonymous
+  logs switch.
+
+## 1.3.0 (16 November 2026)
+
+The big belt update. Belts now look the same and run smoothly on every PC, and guests see the host's
+belts exactly. Everything is done in the mod's own scripts: no extra library and no game file
+replaced. Everyone in the session needs 1.3.0.
+
+### Belts
+- **SMOOTH BELTS** (new, on by default, one switch in F9): belts are drawn smoothly for the host, the
+  guests and in single player. Items no longer stop for a moment and then jump forward when the belt
+  in front of them moves. Only the drawing changes, not how the belts work.
+- **Guests see the host's exact belts:** near a guest (about 45 m) every item sits where the host
+  has it. No more jumping, blinking, doubled or missing items on a guest's belts. Picking items up
+  and the machines work as before.
+- **Safe by itself:** on a game build it does not know yet, SMOOTH BELTS is watched for the first 5
+  minutes and turns itself off on any problem, without a restart. The F9 panel shows what it does
+  right now (on, off after a game update, off after a problem).
+- Fixed: items that fell off a belt end in front of a full machine were made twice on a guest and
+  counted on the host too (extra eco bricks out of nowhere).
+- Fixed: items a guest put on a belt could vanish (for example 6 hay wads put on, 4 arrived).
+- Fixed: a T-splitter's way in, switched by hand, never reached the other player, and a T-joiner's
+  way out did not change its belts. The first switch by hand is no longer undone.
+- Fixed: splitter door filters set by a guest let items out of a door the new filter shuts.
+
+### Machines on guests
+- **Fixed: machines stood still on guests when the host was not looking at them.** Machines near a
+  guest now always move.
+- Smoother machines: depot drones fly without stop-and-go, robot arms further away keep moving, the
+  piston rake no longer shoots past its throw position, the briquette press runs at the right speed,
+  and the sell stand's scale and money sack follow the host.
+- Fixed: machine shadows twitched on guests.
+- Machine jam meters no longer flicker.
+
+### Shared between players
+- Sell stand on guests: payout text, "selling too fast", new best, register sound and combo count,
+  as on the host.
+- Needle cabinet: the doors work both ways, a guest's end-button presses count, and only the host
+  forges the key (guests see it carried to the hatch).
+- Guests see rake throw limits, radar tier overrides, drone fill lamps, jump pad counters and each
+  drone's status line (working, waiting, blocked, what it carries).
+- A guest's depot "empty this item", drone pick filter and arm filter work at once.
+- Fixed: in a sandbox run, two players buying the same upgrade at once got money back that was never
+  paid.
+- Fixed: a needle could be missing on a guest.
+
+### Less lag
+- The host no longer stutters every half second with a guest in a big yard.
+- Belt sync, machine checks and pose sending are much cheaper. Building or taking something down
+  costs the other player 8-13 ms instead of 17-50 ms.
+- Many moving items: every item gets its updates in turn, so none of them stand and then jump.
+
+### Other fixes
+- A quick off-then-on switch click by a guest is no longer lost.
+- No more error spam when the other player takes down a building or item you are aiming at, when
+  pressing F8 while connecting, or from the panel's stripes.
+- Sturdier start: if one part of the world sync does not fit a game build, only that part turns off.
+- The demo build loads every part of the mod.
+- install.bat and uninstall.bat also work with Windows Smart App Control turned on. Nothing is
+  installed outside the game's mods folder. install.bat also removes a file left by early test builds.
+
+## 1.2.21
+
+For the game update of 13 November 2026.
+
+- Fixed: on guests, machines whose animation starts again every cycle (the hay compressor's press, the biogas digester's feed and others) ran backwards for a moment or stood still. They now move with the host.
+- **Selling stand:** guests see the sale animation when hay is sold.
+- **Supply shop:** moving the shop or taking it down shows for everyone, like the sell stand.
+- Fixed: moving the sell stand or taking it down only showed for the other players after they loaded the yard again. It now moves for everyone right away.
+- **Needle radars:** each radar's tier and its upgrades are synced, either player.
+- **Depot "no drones" switch** (per item): set by either player, it applies for everyone.
+- The new yard options (metal cleanup, scrap cap, scrap decay, straw tuft cap) follow the host for everyone in the session, like the other yard rules, so a guest's game no longer cleans up things the host keeps.
+- Old saves that the game sends round the metal detector mission first: where the mission list continues afterwards follows the host.
+
 ## 1.2.20
 
 (1.2.19 was never released: everything from it is in here too.)

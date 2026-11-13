@@ -55,7 +55,13 @@ const MAX_RAW := 4 << 20
 const FIELDS := {
 	# not what they make: a guest works that out, see _feed_generators
 	"generators": ["fuel", "switched_off", "fed_kw", "unplugged", "tank", "water", "_net_sat",
-		"_burning", "arriving", "full_wait", "starved_for"],
+		"_burning", "arriving", "full_wait", "starved_for",
+		# (2026-11-14) "FUEL RUNNING LOW · empty in N min": the minutes are worked out in the
+		# generator's own tick, stopped on a guest, so the warning never showed there
+		"low_fuel_minutes",
+		# (2026-11-14) what else their alerts read that only the host works out: the gas plant's
+		# "FUEL DISCS ONLY · take the X off the intake", a hay generator's oversize load
+		"_wrong_fuel", "_wrong_name", "_oversize"],
 	# the panel's stop/start and rate dial live in discharge_rate/resume_rate;
 	# without them one player's stopped silo kept emptying on the host
 	"silos": ["switched_off", "stored", "queued", "discharge_rate", "resume_rate",
@@ -63,54 +69,103 @@ const FIELDS := {
 	# 1.0.1: every panel setting the current game build has (checked against
 	# its scripts); before, a split ratio, route, pick order, drone zone, head
 	# aim or depot emptying set by one player never reached the other
-	"splitters": ["forced_side", "priority_side", "next_side", "left_share",
-		"split_route", "split_route_on", "split_route_alt", "filters", "smart", "manual", "closed_lane", "_holding", "_stuck"],
-	"joiners": ["next_side", "out_lane", "manual"],
+	# (2026-11-14) manual, then entry FIRST: a T-splitter's way in, set by hand; set_entry() remaps
+	# the sides below, so it has to land before them (see _apply_field). manual before it, as the
+	# game does it (set_t_by_hand): a T still on "by belts" gets its way in worked out again from
+	# the belts when the junctions are rebuilt, and the hand-set one was undone at once.
+	"splitters": ["manual", "entry", "forced_side", "priority_side", "next_side", "left_share",
+		"split_route", "split_route_on", "split_route_alt", "filters", "smart", "closed_lane", "_holding", "_stuck"],
+	"joiners": ["manual", "next_side", "out_lane"],
 	"tube_launchers": ["switched_off", "aim", "power", "stored", "pending_needles"],
 	# (1.2.19) the rake panel's last stroke (bite, gathered, thrown) and the reasons its
 	# header and alert sign give (JAMMED, RAKING NOTHING, BELT FULL): they stayed at 0 / off
 	"piston_rakes": ["switched_off", "throw_distance", "last_bite", "last_gathered", "last_thrown",
-		"_jam_strokes", "_dry_strokes", "_holding"],
+		"_jam_strokes", "_dry_strokes", "_holding",
+		# (2026-11-13, dev/machine_audit.md) the throw limit and its counter: the guest's
+		# rake never showed its limit and the panel counter stayed at 0
+		"throw_limit_hit", "_thrown_total", "_did_throw",
+		# (2026-11-14) why the host would not drive it (the panel shows it next to Back/Forward)
+		"drive_blocked"],
 	"pelletizers": ["switched_off", "throw_distance", "stored", "head_yaw", "_jam", "pending_needles", "iron_points", "copper_points", "poured",
 		"_grind", "_cycle", "_holding", "starved_for", "furnace_heat",
 		# the smelter's working state, see _drive_smelter
 		"_load_clock", "_heat_clock", "_pour_clock", "_casting_metal", "_gripped", "_released",
 		"_held_out", "activity", "_load_rate", "_heat_rate", "_cast_rate", "_handoff_at", "_cast_length"],
 	# _stall: the reason it shows, "nowhere to put it" and the like
-	"robotic_arms": ["switched_off", "accept_mask", "tier_index", "pick_order", "completed_cycles", "delivered_needles", "_stall"],
+	"robotic_arms": ["switched_off", "accept_mask", "tier_index", "pick_order", "completed_cycles", "delivered_needles", "_stall",
+		# (2026-11-14) "NOWHERE TO PUT IT" and its kind come from these (alert_reason)
+		"_drop_fault", "_hold_tries",
+		# (2026-11-14) which belts it takes from and puts on (and "take when stuck"), made up,
+		# travels as links_to_save(): set by hand in the arm's link mode, never synced before
+		"_links"],
 	"scanners": ["switched_off", "tier_index", "banked", "stored", "thrown", "cannon_yaw",
 		"cannon_throw", "_cycle_left", "_emit_left", "_loads", "_loads_total", "_outgoing", "behind", "starved_for"],
 	"hay_lifts": ["down", "head_turn"],
 	# renamed power lines, cables strung or cut by hand
 	"power_poles": ["line_name", "links_at", "cuts_at"],
 	"compressors": ["switched_off", "stored", "_jam", "pending_needles", "_cycle", "starved_for", "_press", "handover_frame"],
-	"pulpers": ["switched_off", "stored", "_jam", "pending_needles", "water", "slabs_made", "_cycle", "starved_for", "_bed"],
+	"pulpers": ["switched_off", "stored", "_jam", "pending_needles", "water", "slabs_made", "_cycle", "starved_for", "_bed",
+		# (2026-11-14) is_running() for the production panel is _run >= 0 (see COARSE)
+		"_run"],
 	# _t/_running: a fabricator's work timer, or the guest's panel shows its own
 	# _cycle_recipe: the part a fabricator's mould is making (latched from recipe when a cycle
 	# starts; only fabricators have it). Its mould is redrawn by _sync_mould, see REDRAW.
 	"papers": ["switched_off", "queued", "recipe", "queued_needles", "pending_needles", "pressed", "_t", "_running",
-		"_stage", "_out_left", "_out_strands", "made", "cycles", "starved_for", "_cycle_recipe"],
+		"_stage", "_out_left", "_out_strands", "made", "cycles", "starved_for", "_cycle_recipe", "_run"],
 	# full game: assemblers, bioplastic reactors and carbon kilns are briquette
 	# presses underneath and live in this list; "recipe" is theirs (a plain
 	# press has none, and a field a machine lacks is skipped)
 	"briquette_presses": ["switched_off", "stored_strands", "stored_bricks", "recipe", "_jam", "pending_needles", "slots", "made",
-		"_cycle", "starved_for"],
+		"_cycle", "starved_for",
+		# (2026-11-14) an assembler's "output blocked" alert (alert_reason)
+		"_push_failed", "_out_id",
+		# (2026-11-14) running or not (production panel) and an assembler's cycle time
+		"_run", "_cycle_duration"],
 	# depots are wrappers underneath: emptying is theirs
 	"wrappers": ["switched_off", "queued", "emptying", "emptying_kinds", "queued_needles", "pending_needles", "taken",
 		"_wrap", "starved_for"],
 	"boreholes": ["switched_off"],
 	"dump_hatches": ["stored"],
-	"needle_radars": ["cooldown", "last_found", "phase", "_marks"],
+	# (1.2.21) tier_index/paid_cost: since the game update of 13 Nov 2026 each radar has
+	# its own tier and can be upgraded
+	"needle_radars": ["cooldown", "last_found", "phase", "_marks", "tier_index", "paid_cost",
+		# (2026-11-13, dev/machine_audit.md) a tier set by hand, and the tier of the last run
+		"tier_override", "_fired_tier"],
 	"work_lamps": ["brightness", "_off", "tint", "sensor_auto", "sensor_on", "sensor_off", "sensor_dark", "paint"],
 	# full game additions. Panel presses, fabricators and fibre machines are
 	# paper machines underneath; depot drones are hay drones.
 	# _stowed: what a depot drone's pod holds (made up; travels as stowed_records()). Its fill
 	# lamps count it, and they stayed as they were when the guest joined.
 	"hay_drones": ["switched_off", "mode", "zone_at", "zone_r", "drop_at", "drop_kind", "takes", "trips", "strands_put",
-		"_stowed"],
-	"hay_excavators": ["switched_off", "throw_distance", "dug", "thrown", "aimed", "aim_yaw", "aim_pitch", "aim_intake"],
-	"skyline_cranes": ["switched_off", "zone_at", "zone_radius", "dug", "lots", "feed_rate"],
+		"_stowed", "fill_slots",
+		# (2026-11-13) what its status line (plate_status) reads: on a guest the stopped copy
+		# kept its own and showed the wrong state (CLAUDE.md known issue). Display only.
+		# (not power/power_line: the guest's own power grid works those out the same way)
+		"_load_too_long", "_route_why", "_route_dirty",
+		"_route_block_name", "_route_leg", "_route_block", "_phase", "_stall", "_empty_why",
+		"_wait_traffic", "_wait",
+		# (2026-11-14) a depot drone's status line on top: which item it fetches for an order and
+		# how many more, lorry bed or doorway (only depot drones have these; null elsewhere)
+		"errand", "_fetch_short", "_bed_at", "_bed_refused",
+		# (2026-11-14) made up: 1 while the claws hold something (its status line counts it on board)
+		"_held_on"],
+	"hay_excavators": ["switched_off", "throw_distance", "dug", "thrown", "aimed", "aim_yaw", "aim_pitch", "aim_intake",
+		# (2026-11-14) its work state and load: a guest's stopped copy kept the state it was loaded
+		# with and showed "NOTHING MORE IN REACH" (or "SET ME UP") while the host's dug away
+		"state", "load_strands", "_holding"],
+	"skyline_cranes": ["switched_off", "zone_at", "zone_radius", "dug", "lots", "feed_rate",
+		# (2026-11-14) the panel's feed slider at its top end sets feed_full, not feed_rate: a
+		# guest's "full" never reached the host. hopper: what its panel shows it holds
+		"feed_full", "hopper"],
 	"pipe_pumps": ["switched_off", "tier"],
+	# (2026-11-13, dev/machine_audit.md) a needle cabinet's doors: a guest's cabinet is
+	# stopped, so opening it there played nothing and the host never knew
+	# (2026-11-14) the end button: presses left and whether the key is being forged (the host's;
+	# a guest's press goes to the host as an edit of _end_left, see _apply_field)
+	"cabinets": ["_open", "_end_left", "_unleashed"],
+	# (2026-11-14, F54) the sell stand: its combo count, and its last sale (made up, see
+	# _watch_sales). A sale runs on the host only; a guest saw no payout, sound or combo.
+	"stand": ["_combo", "_sale"],
 }
 
 # Machines from the full game's mixed lists (extras, fixtures, ...) go under
@@ -121,6 +176,9 @@ const MIXED_FIELDS := ["switched_off", "recipe", "mode", "setting"]
 
 # Machines that keep running on clients but whose settings still have to match.
 const SETTINGS_ONLY := ["work_lamps", "power_poles"]
+
+# (1.2.21) BuildManager's single buildings whose moving parts and clips follow the host
+const SINGLES := ["stand", "shop"]
 
 # The areas a machine watches for something to eat. Named rather than walked,
 # because a machine's other areas are the scanner's beam and the stairs' climb
@@ -136,14 +194,15 @@ const MOUTH_TICK := 0.25
 const SETTINGS := {
 	"generators": ["switched_off"],
 	"silos": ["switched_off", "discharge_rate", "resume_rate"],
-	"splitters": ["forced_side", "priority_side", "left_share", "split_route",
-		"split_route_on", "split_route_alt", "filters", "smart", "manual", "closed_lane"],
-	"joiners": ["out_lane", "manual"],
+	"splitters": ["manual", "entry", "forced_side", "priority_side", "left_share", "split_route",
+		"split_route_on", "split_route_alt", "filters", "smart", "closed_lane"],
+	"joiners": ["manual", "out_lane"],
 	"tube_launchers": ["switched_off", "aim", "power"],
 	# _drive: the panel's Back/Forward, made up, see _send_drives
-	"piston_rakes": ["switched_off", "throw_distance", "_drive"],
+	# (2026-11-14) throw_limit_hit: the panel's reset (rake_panel sets it false) has to reach the host
+	"piston_rakes": ["switched_off", "throw_distance", "_drive", "throw_limit_hit"],
 	"pelletizers": ["switched_off", "throw_distance", "head_yaw", "_jam"],
-	"robotic_arms": ["switched_off", "accept_mask", "tier_index", "pick_order"],
+	"robotic_arms": ["switched_off", "accept_mask", "tier_index", "pick_order", "_links"],
 	"scanners": ["switched_off", "tier_index", "cannon_yaw", "cannon_throw"],
 	"hay_lifts": ["down", "head_turn"],
 	"power_poles": ["line_name", "links_at", "cuts_at"],
@@ -153,13 +212,16 @@ const SETTINGS := {
 	"briquette_presses": ["switched_off", "recipe", "_jam"],
 	"wrappers": ["switched_off", "emptying", "emptying_kinds"],
 	"boreholes": ["switched_off"],
-	"needle_radars": ["phase"],  # the button: the host's radar goes off, see _apply_field
+	# phase: the button, the host's radar goes off, see _apply_field. tier_index/paid_cost:
+	# a guest's radar upgrade, like the arms' tier
+	"needle_radars": ["phase", "tier_index", "paid_cost"],
 	"work_lamps": ["brightness", "_off", "tint", "sensor_auto", "sensor_on", "sensor_off", "sensor_dark", "paint"],
 	# full game additions (see FIELDS)
 	"hay_drones": ["switched_off", "mode", "zone_at", "zone_r", "drop_at", "drop_kind", "takes"],
 	"hay_excavators": ["switched_off", "throw_distance", "aimed", "aim_yaw", "aim_pitch", "aim_intake"],
-	"skyline_cranes": ["switched_off", "zone_at", "zone_radius", "feed_rate"],
+	"skyline_cranes": ["switched_off", "zone_at", "zone_radius", "feed_rate", "feed_full"],
 	"pipe_pumps": ["switched_off"],
+	"cabinets": ["_open", "_end_left"],
 }
 
 # The full game's lists that mix machines with plain fittings.
@@ -248,6 +310,13 @@ func start(mp_node: Node, world_node: Node) -> void:
 
 
 func shutdown() -> void:
+	if _held_stand_in != null and is_instance_valid(_held_stand_in):
+		var drones: Variant = builds.get("hay_drones") if builds != null and is_instance_valid(builds) else null
+		for d in (drones if drones is Array else []):
+			if is_instance_valid(d) and "_held" in d and d.get("_held") == _held_stand_in:
+				d.set("_held", null)
+		_held_stand_in.free()
+	_held_stand_in = null
 	_parts.clear()
 	_fx.clear()
 	_ids.clear()
@@ -265,6 +334,9 @@ func shutdown() -> void:
 
 # Every machine worth sending, under a key both sides work out the same way:
 # the array it lives in and where it stands.
+var _nodes_sig := 0
+var _nodes_n := -1
+
 func _rescan() -> void:
 	if builds == null or not is_instance_valid(builds):
 		return
@@ -285,14 +357,37 @@ func _rescan() -> void:
 				var key := _key(String(group), n)
 				_nodes[key] = n
 				_group[key] = String(group)
+	# (1.2.21) the sell stand and the supply shop: one of each, not in a list. A sale
+	# runs on the host, so the stand's sale, till and sack clips never played on a
+	# guest. Poses and clips only: neither is frozen and neither has a setting.
+	for single in SINGLES:
+		var s: Variant = builds.get(single)
+		if s is Node3D and is_instance_valid(s):
+			var skey := _key(String(single), s)
+			_nodes[skey] = s
+			_group[skey] = String(single)
+			if single == "stand":
+				if mp.is_host:
+					_watch_sales(s as Node)
+				else:
+					_note_stand(s as Node)
 	_rescan_mixed(ws)
 	_rescan_deco(ws, groups + SETTINGS_ONLY + MIXED_GROUPS)
 	_refresh_parts()
+	# (2026-11-13) the same machines as last time (the usual case): nothing to forget, and
+	# the 18 lists below need no walk
+	var sig := hash(_nodes.keys())
+	if sig == _nodes_sig and _nodes.size() == _nodes_n:
+		return
+	_nodes_sig = sig
+	_nodes_n = _nodes.size()
+	if _key_cache.size() > _nodes.size() * 2 + 256:
+		_key_cache.clear()
 	# forget machines that are gone (this used to run over _parts after it was
 	# cleared, so it never did anything and every demolished machine's state
 	# stayed behind for good)
 	for d in [_sent, _flags, _vals, _goal, _fx_sent, _fx_seen, _theirs, _edit_sent, _edit_at, _far_sent, _moved_ever, _anim_sent, _anim_on, _pbuf,
-			_claw_sent, _claw_due, _claw_on, _claw_t]:
+			_claw_sent, _claw_due, _claw_on, _claw_t, _wrote, _local_parts, _gap_ms, _last_word]:
 		for key in (d as Dictionary).keys():
 			if not _nodes.has(key):
 				(d as Dictionary).erase(key)
@@ -375,13 +470,23 @@ func _local_key(key: String) -> String:
 	return best
 
 
+# (2026-11-13) a rescan (every 2 s) built this text for every machine, belt and lamp of
+# the yard again (~700 on the test save, part of a 4-9 ms hitch): kept per node now and
+# built again only when the node moved or its group changed.
+var _key_cache := {}   # node instance id -> [group, position, b, key]
+
 func _key(group: String, n: Node3D) -> String:
 	var p := _pos_of(n)
+	var b: Variant = n.get("b") if "a" in n and "b" in n else null
+	var id := n.get_instance_id()
+	var c: Variant = _key_cache.get(id)
+	if c is Array and c[0] == group and c[1] == p and c[2] == b:
+		return c[3]
 	var k := "%s|%.2f,%.2f,%.2f" % [group, p.x, p.y, p.z]
 	# belts, rails, beams, pipes: placed by two ends, and several can share one
-	var b: Variant = n.get("b") if "b" in n else null
-	if "a" in n and b is Vector3:
+	if b is Vector3:
 		k += "|%.2f,%.2f,%.2f" % [b.x, b.y, b.z]
+	_key_cache[id] = [group, p, b, k]
 	return k
 
 
@@ -401,7 +506,7 @@ func _pos_of(n: Node3D) -> Vector3:
 # platform changed for the player who did it only.
 const KIND_FIELDS := {
 	"yard_fan": ["switched_off", "turn", "tilt", "height", "strength", "paint"],
-	"jump_pad": ["switched_off", "angle", "strength", "paint"],
+	"jump_pad": ["switched_off", "angle", "strength", "paint", "throws"],
 	"yard_light": ["switched_off", "tint", "brightness", "tilt", "sensor_auto",
 		"sensor_on", "sensor_off", "sensor_dark", "paint"],
 	# fixtures (signs, markings, ladders, ramps, beams...) keep their settings in
@@ -520,6 +625,9 @@ func _refresh_parts() -> void:
 
 
 func _forget_parts(key: Variant) -> void:
+	_redraw_players.erase(_walked.get(key))
+	if _redraw_players.size() > 2048:
+		_redraw_players.clear()  # nodes that are gone: walked again on their next redraw
 	_parts.erase(key)
 	_ids.erase(key)
 	_slot.erase(key)
@@ -601,6 +709,12 @@ func _walk_named(n: Node, prefix: String, out: Array, paths: PackedStringArray, 
 		# the guest builds its own from the count, see _claw_count
 		if arm and child is MultiMeshInstance3D and (child as Node3D).top_level:
 			continue
+		# (2026-11-14) the game's shadow stand-ins (world/shadow_fixes.gd): shadow-only copies
+		# that a RemoteTransform3D or a BoneAttachment3D keeps on the part they stand for, on
+		# every PC by itself. Sent as poses too, a guest's easing pulled them behind while the
+		# follower put them back: the shadow jumped (rake: 22 jumps in 10 s, host 8).
+		if _shadow_stand_in(child):
+			continue
 		var nm := String(child.name)
 		if nm.begins_with("@"):
 			nm = "%s#%d" % [cls, seen]
@@ -608,6 +722,124 @@ func _walk_named(n: Node, prefix: String, out: Array, paths: PackedStringArray, 
 		out.append(child)
 		paths.append(path)
 		_walk_named(child, path, out, paths)
+
+
+func _shadow_stand_in(c: Node) -> bool:
+	if c is GeometryInstance3D:
+		return (c as GeometryInstance3D).cast_shadow == GeometryInstance3D.SHADOW_CASTING_SETTING_SHADOWS_ONLY 			and c.has_meta("shadow_fix_off") and c.get_meta("shadow_fix_off") is bool
+	if c is RemoteTransform3D:
+		var to: Node = (c as RemoteTransform3D).get_node_or_null((c as RemoteTransform3D).remote_path)
+		return String(c.name).begins_with("ShadowProxyFollow") or (to != null and _shadow_stand_in(to))
+	if c is BoneAttachment3D and c.get_child_count() > 0:
+		for k in c.get_children():
+			if not _shadow_stand_in(k):
+				return false
+		return true
+	return false
+
+
+# (2026-11-14) The game holds a machine's clips, slows them, draws it only a few times a
+# second or tells it it is unseen when the HOST's own eye is far or looks elsewhere
+# (world/machine_lod.gd). The host's clips and parts are what guests get: a guest standing
+# at a machine the host was not looking at saw it stand still (_test/lod_test.py: 100%
+# moving, 0% as soon as the host turned away). Machines near a guest are kept as if they
+# stood near the host's eye and in view; given back when no guest is near any more.
+# The game's LOD class, looked up by name and read by name: the demo's older build lacks some of
+# its members (_slow), and naming them in code kept this whole file from loading there (the
+# machine sync was then off in the demo; caught by the demo boot check of _test/paket_bauen.py).
+var _lod_cls: Variant = false  # false = not looked up yet
+
+func _lod_static(member: String) -> Variant:
+	if _lod_cls is bool:
+		_lod_cls = null
+		for c in ProjectSettings.get_global_class_list():
+			if String(c.get("class", "")) == "MachineLod":
+				_lod_cls = load(String(c.get("path", "")))
+				break
+	if _lod_cls == null or not is_instance_valid(_lod_cls):
+		return null
+	return (_lod_cls as Object).get(member)
+
+
+const LOD_GUEST_M := 70.0
+const LOD_EVERY := 0.5
+var _lod_t := 0.0
+var _lod_kept := {}  # machine root instance id -> [watch dict, gate, base, offok, reach]
+
+func _lod_for_guests(delta: float) -> void:
+	_lod_t += delta
+	if _lod_t < LOD_EVERY:
+		return
+	_lod_t = 0.0
+	var spots: Array = []
+	var ws: Variant = mp.get("world_sync")
+	if mp.is_host and mp.active() and ws != null and is_instance_valid(ws) and ws.has_method("avatar_positions"):
+		spots = (ws.call("avatar_positions") as Dictionary).values()
+	var keep := {}
+	var watched: Variant = _lod_static("_watched")
+	if not spots.is_empty() and watched is Array:
+		for w: Dictionary in watched:
+			var root: Variant = w.get("root")
+			if root == null or not is_instance_valid(root) or not (root as Node3D).is_inside_tree():
+				continue
+			var at: Vector3 = (root as Node3D).global_position
+			var near := false
+			for spot in spots:
+				if at.distance_to(spot) <= LOD_GUEST_M:
+					near = true
+					break
+			if not near:
+				continue
+			var id := (root as Object).get_instance_id()
+			keep[id] = true
+			if not _lod_kept.has(id):
+				_lod_kept[id] = [w, w.get("gate"), w.get("base"), w.get("offok"), w.get("reach")]
+			w["gate"] = INF
+			w["offok"] = false
+			w["reach"] = Vector2(INF, INF)
+	for id in _lod_kept.keys():
+		if keep.has(id):
+			continue
+		var row: Array = _lod_kept[id]
+		var w: Dictionary = row[0]
+		_lod_kept.erase(id)
+		if row[1] != null:
+			# the game moves every gate by the same step when the view distance changes (regate)
+			var moved := float(w.get("base", 0.0)) - float(row[2]) if row[2] != null else 0.0
+			w["gate"] = float(row[1]) + moved
+		if row[3] == null:
+			w.erase("offok")
+		else:
+			w["offok"] = row[3]
+		if row[4] == null:
+			w.erase("reach")
+		else:
+			w["reach"] = row[4]
+
+
+# (2026-11-14) Guest: the cabinet's last end press on a guest's own copy starts a KeyForge
+# under it, and only the cabinet itself is frozen there: the forge ran, made a key of the
+# guest's own (GameState.key_taken, a HatchKey in the guest's world) the host never knew of.
+# The press goes to the host (_apply_field "_end_left"); a forge started here is taken away.
+var _forge_t := 0.0
+
+func _no_local_key(delta: float) -> void:
+	_forge_t += delta
+	if _forge_t < 0.2 or builds == null or not is_instance_valid(builds):
+		return
+	_forge_t = 0.0
+	var cabs: Variant = builds.get("cabinets")
+	if not (cabs is Array):
+		return
+	for c in cabs:
+		if not is_instance_valid(c) or not ("_forge" in c):
+			continue
+		var forge: Variant = c.get("_forge")
+		if forge != null and is_instance_valid(forge):
+			(forge as Node).queue_free()
+			c.set("_forge", null)
+			if mp != null and mp.trace != null:
+				mp.trace.note("cabinet: a key forge started on this guest was taken away (the host forges it)")
 
 
 # ------------------------------------------------------------------ ticks
@@ -625,6 +857,8 @@ func _process_inner(delta: float) -> void:
 	_ease(delta)
 	if mp != null:
 		mp.perf("machines.ease", Time.get_ticks_usec() - _tp_ease)
+	if mp != null and (mp.is_host or not _lod_kept.is_empty()):
+		_lod_for_guests(delta)
 	if mp == null or not mp.active() or multiplayer.multiplayer_peer == null:
 		return
 	if multiplayer.multiplayer_peer.get_connection_status() != MultiplayerPeer.CONNECTION_CONNECTED:
@@ -644,6 +878,7 @@ func _process_inner(delta: float) -> void:
 		mp.perf("machines.smelters", Time.get_ticks_usec() - _tp_guest)
 		_tp_guest = Time.get_ticks_usec()
 		_tick_radar_marks(delta)
+		_no_local_key(delta)
 		mp.perf("machines.radar", Time.get_ticks_usec() - _tp_guest)
 		_feed_generators(delta)
 		# a guest works the panels on its own copy, which the machine itself
@@ -671,13 +906,19 @@ func _process_inner(delta: float) -> void:
 		_rescan()
 		mp.perf("machines.rescan", Time.get_ticks_usec() - _tp_rescan)
 	_t += delta
-	if _t >= TICK and _pose_slot.take():
+	# (2026-11-13) a pose tick is done in two halves, TICK/2 apart, each with half the time
+	# budget: the same work, but a 3-4 ms piece every 50 ms instead of a 6-7.5 ms one every
+	# 100 ms (an uneven frame ten times a second on the host). The turns (full refresh,
+	# far machines) still count whole ticks: they move on in the first half only.
+	if _t >= TICK * 0.5 and _pose_slot.take():
 		_t = 0.0
+		_pose_second = not _pose_second
 		# (1.1.4, idea from xRangerDE's Multiplayer Enhanced, MIT) the full
 		# refresh used to send every part of every machine in one tick each
 		# FULL_TICK; now each tick refreshes the machines whose turn it is, so
 		# every machine still gets one every FULL_TICK, never all at once
-		_full_phase = (_full_phase + 1) % FULL_SLICES
+		if not _pose_second:
+			_full_phase = (_full_phase + 1) % FULL_SLICES
 		var _tp_poses := Time.get_ticks_usec()
 		_send_poses()
 		mp.perf("machines.poses", Time.get_ticks_usec() - _tp_poses)
@@ -778,6 +1019,8 @@ func _send_poses() -> void:
 		if _near(at, watchers):
 			near_k.append(key)
 			continue
+		if _pose_second:
+			continue   # far ones: once per whole tick, in its first half
 		var every := MID_POSE_EVERY if _near_within(at, watchers, FAR_RANGE) else FAR_POSE_EVERY
 		# by the same turn as the full refresh below, so a far one still gets its full one
 		if posmod(_full_phase - absi(String(key).hash()), every) == 0:
@@ -795,9 +1038,9 @@ func _send_poses() -> void:
 	var due_done := 0
 	while step < total:
 		var spent := Time.get_ticks_usec() - t0
-		if spent > POSE_BUDGET_US:
+		if spent > POSE_BUDGET_US / 2:
 			break
-		if step < n_near and spent > NEAR_SHARE_US:
+		if step < n_near and spent > NEAR_SHARE_US / 2:
 			step = n_near   # the rest of the near ones go on next tick
 			continue
 		var key: String = keys[step]
@@ -885,7 +1128,8 @@ func _send_poses() -> void:
 			any_full = any_full or _full
 	# each list carries on next tick from where the budget stopped it
 	_pose_at = (first + near_done) % maxi(1, n_near) if near_done < n_near else 0
-	_due_at = (dfirst + due_done) % maxi(1, due_k.size()) if due_done < due_k.size() else 0
+	if not _pose_second:   # the second half has no far ones: keep their turn where it is
+		_due_at = (dfirst + due_done) % maxi(1, due_k.size()) if due_done < due_k.size() else 0
 	# from here on _full means: this packet carries a full refresh (reliable)
 	_full = any_full
 	if batch.is_empty():
@@ -1052,7 +1296,7 @@ func _send_fields_inner(only_settings := false, keys: Array = []) -> void:
 			if v == null or v is Object or v is RID or v is Callable:
 				continue
 			if not was.has(f) or was[f] != v:
-				if only_settings and mp.is_host and was.has(f) and mp.trace != null \
+				if only_settings and mp.is_host and was.has(f) and mp.trace != null and f != "_jam" \
 				and Time.get_ticks_msec() - int(_guest_edit_at.get(key, -100000)) > 1500:
 					mp.trace.act("ev=press m=%s f=%s" % [_mid(String(key)), f])
 					mp.trace.bump("presses")
@@ -1098,6 +1342,7 @@ func on_poses(packed: PackedByteArray, raw_size: int) -> void:
 
 
 const DRAIN_BUDGET_US := 3000  # guest: applying poses, per frame
+var _pose_second := false   # host: this pose pass is the second half of its tick
 const POSE_BUDGET_US := 6000  # machine animation work per pose tick (10 a second), host and guest; 3000 left busy yards with arms updated 2-3 times a second
 const POSE_WALKS := 2          # new part lists built per frame at most
 var _pose_queue: Array = []    # guest: [host key, entry] waiting to be applied
@@ -1257,14 +1502,35 @@ func _apply_fields_of(host_key: String, diff: Dictionary) -> void:
 	# ours; the edit tick sees the difference and asks again.
 	var fresh := Time.get_ticks_msec() - int(_edit_at.get(key, -100000)) < EDIT_GUARD_MS
 	var ours: Dictionary = _edit_sent.get(key, {})
+	var settings: Array = _settings_of(String(_group.get(key, "")))
 	for f in diff:
+		var had: bool = known.has(String(f))
+		var before: Variant = known.get(String(f))
 		known[String(f)] = diff[f]
+		# (2026-11-13) the host only repeats what it said before (its regular full pass),
+		# but the player has changed this setting here and the edit tick has not sent it yet
+		# (it looks every 50-200 ms): applying the repeat threw the click away (switch test:
+		# 3 of 40 guest clicks never reached the host). Keep ours; it goes out on the next
+		# edit tick. Settings only (nothing else changes on a stopped copy by itself); not
+		# the jam meter, which runs down here on its own.
+		if had and settings.has(String(f)) and String(f) != "_jam" and not ours.has(String(f)) \
+		and before == diff[f] and _get_field(n as Node, String(f)) != diff[f]:
+			continue
 		# only an edit of ours the host has not answered yet is protected. Once
 		# it says our value back the edit is settled and its word counts again;
 		# anything else would send our old value back over a newer change of theirs
 		var mine: Variant = ours.get(String(f))
 		if mine is Array and (mine as Array).size() == 2 and (mine as Array)[0] != diff[f] \
 		and fresh and _settings_of(String(_group.get(key, ""))).has(String(f)):
+			continue
+		# (2026-11-13) the host says back the edit we sent, but the player has switched again
+		# here since (off, then on at once): applying the echo threw the newer click away and
+		# the host never heard of it (3 of 40 quick off/on clicks in the switch test). The
+		# edit is settled; ours stays and the next edit tick sends it.
+		if mine is Array and (mine as Array).size() == 2 and (mine as Array)[0] == diff[f] \
+		and fresh and _settings_of(String(_group.get(key, ""))).has(String(f)) \
+		and _get_field(n as Node, String(f)) != diff[f]:
+			ours.erase(String(f))
 			continue
 		ours.erase(String(f))
 		# the 3 s full refresh repeats values we already have: skip those,
@@ -1365,6 +1631,8 @@ func _present_smelters(delta: float) -> void:
 # gauges, readout, heap and lamps from what it holds: the silo showed its own
 # old numbers while the host's tank held something else. Repaint after every
 # update. Only drawing methods, and only the ones the machine has.
+var _redraw_players := {}  # machine node -> its AnimationPlayers (guest, _redraw)
+var _held_stand_in: Node3D = null  # guest: what a drone "holds" while the host's holds something
 const REDRAW := ["_apply_dials", "_apply_heap", "_apply_readout", "_apply_lamps",
 	"_apply_spin", "_draw_spin", "_apply_meter", "_apply_gauge", "_apply_lamp",
 	"_refresh_screen", "_apply_cannon", "_sync_counts", "_sync_mould"]
@@ -1372,9 +1640,23 @@ const REDRAW := ["_apply_dials", "_apply_heap", "_apply_readout", "_apply_lamps"
 func _redraw(n: Node) -> void:
 	if mp.is_host or n == null or not is_instance_valid(n):
 		return
+	# (2026-11-14) drawing must not touch how its clips play: those follow the host
+	# (_apply_anims). The briquette press's _apply_spin sets its grind and mill clips'
+	# speed from the stopped copy's own numbers (0.12 where the host ran 0.74): the clips
+	# fell behind, were pulled forward again and its sleeve jumped up to 35 cm.
+	var ps: Array = _redraw_players.get(n, [])
+	if not _redraw_players.has(n):
+		ps = (n as Node).find_children("*", "AnimationPlayer", true, false)
+		_redraw_players[n] = ps
+	var speeds := PackedFloat32Array()
+	for p in ps:
+		speeds.append((p as AnimationPlayer).speed_scale if is_instance_valid(p) else 0.0)
 	for m in REDRAW:
 		if n.has_method(m) and n.get_method_argument_count(m) == 0:
 			n.call(m)
+	for i in ps.size():
+		if is_instance_valid(ps[i]) and (ps[i] as AnimationPlayer).speed_scale != speeds[i]:
+			(ps[i] as AnimationPlayer).speed_scale = speeds[i]
 
 
 # Guest: anything in SETTINGS that no longer matches what the host last told us
@@ -1497,9 +1779,20 @@ var _edit_near_t := 0.0
 var _edit_all: Array = []
 var _edit_i := 0
 
+# (2026-11-13) With the mouse free (a panel, the menu, chat) every building was read 20 times
+# a second: ~700 on the test yard, 4-5 ms each time, as long as a panel stayed open. The ones
+# in reach (where the open panel is) still go every tick; all of them every EDIT_FREE_ALL-th.
+const EDIT_FREE_ALL := 4
+var _edit_free_n := 0
+
 func _edit_turn() -> Array:
 	if Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
-		return _nodes.keys()
+		_edit_free_n += 1
+		if _edit_free_n >= EDIT_FREE_ALL:
+			_edit_free_n = 0
+			return _nodes.keys()
+		_edit_turn_near()   # keeps the near list fresh (and turns the rolling pass)
+		return _edit_near.duplicate()
 	return _edit_turn_near()
 
 
@@ -1558,10 +1851,37 @@ func _feed_mouths() -> void:
 
 # Host: a guest worked a panel. The machine is ours to run, so apply it here and
 # the next field tick hands it to everyone, the guest who asked included.
+# (2026-11-14) An excavator's dig zone set by a guest (its zone mode calls set_tube on the
+# guest's stopped copy): only the angles reached the host, and the host's excavator stayed
+# "NOTHING MORE IN REACH" and never moved there. What set_tube() does after the angles is done
+# here too: new target for the arm, state MOVING, tube redrawn, woken up.
+const AIM_FIELDS := ["aimed", "aim_yaw", "aim_pitch", "aim_intake"]
+
+func _retube(n: Node) -> void:
+	if not n.has_method("aim_controls") or not ("_want" in n) or not bool(n.get("aimed")):
+		return
+	var states: Variant = (n.get_script() as Script).get_script_constant_map().get("State") if n.get_script() != null else null
+	if not (states is Dictionary) or not (states as Dictionary).has("MOVING"):
+		return
+	n.set("_want", n.call("aim_controls", 0.0))
+	if "_extending" in n:
+		n.set("_extending", false)
+	if "_acc" in n:
+		n.set("_acc", 0.0)
+	n.set("state", int((states as Dictionary)["MOVING"]))
+	if "_tube_key" in n:
+		n.set("_tube_key", "")
+	if n.has_method("_draw_tube"):
+		n.call("_draw_tube")
+	if n.has_method("_wake"):
+		n.call("_wake")
+
+
 func on_edit(from: int, batch: Dictionary) -> void:
 	if not mp.is_host or not mp.players.has(from):
 		return
 	_press_marks(batch, " by=guest")
+	var echo := {}
 	for guest_key in batch:
 		var key := _local_key(String(guest_key))
 		var n: Variant = _nodes.get(key)
@@ -1571,16 +1891,40 @@ func on_edit(from: int, batch: Dictionary) -> void:
 		var diff: Dictionary = batch[guest_key]
 		var was: Dictionary = _vals.get(key, {})
 		_guest_edit_at[key] = Time.get_ticks_msec()
+		var aimed_now := false
 		for f in diff:
 			# only ever the settings: a guest does not get to set our stock
 			if names.has(String(f)):
 				_apply_field(n as Node, String(f), diff[f])
+				if AIM_FIELDS.has(String(f)):
+					aimed_now = true
 			# forget what we last sent for it either way, so the next field
 			# tick states our value again: that is what puts a guest back in
 			# line when we would not take the change
 			was.erase(String(f))
 		_vals[key] = was
 		_after_fields(n as Node)
+		if aimed_now:
+			_retube(n as Node)
+		# (F60, 2026-11-16) say our value back now, not on the next field pass: the fast pass
+		# only covers machines within SETTINGS_REACH of our own player, so for a machine the
+		# guest works far from us the echo came with the rolling full pass, up to 0.5 s later.
+		# A change of ours in that window went out instead of the echo; the guest kept its own
+		# edit against it (EDIT_GUARD_MS) and sent its old value again: our change was undone
+		# (cabinet_radar_test: "host opens the cabinet" 2 of 3 times closed again by itself).
+		var back := {}
+		for f in diff:
+			if not names.has(String(f)):
+				continue
+			var v: Variant = _get_field(n as Node, String(f))
+			if v == null or v is Object or v is RID or v is Callable:
+				continue
+			back[String(f)] = v
+			was[String(f)] = v.duplicate(true) if (v is Array or v is Dictionary) else v
+		if not back.is_empty():
+			echo[key] = back
+	if not echo.is_empty():
+		mp._rx_machine_fields.rpc(echo)
 	# answer straight away instead of on the next tick: the guest who flipped
 	# the switch, and everyone else, see it within one round trip
 	_settings_t = SETTINGS_TICK
@@ -1599,7 +1943,9 @@ var _jam_glow_tried := false
 
 # Times that run all the time: a little rounding, or they would go out on every
 # pass. The warnings that read them only care about seconds.
-const COARSE := {"starved_for": 0.5, "blocked_for": 0.5, "arriving": 0.5, "full_wait": 0.5, "behind": 0.1}
+const COARSE := {"starved_for": 0.5, "blocked_for": 0.5, "arriving": 0.5, "full_wait": 0.5, "behind": 0.1,
+	# (2026-11-14) a run timer, -1 when stopped: only "running or not" matters on a guest
+	"_run": 1.0}
 
 # What only a panel or a lamp right in front of a player shows, and that changes
 # all the time: not worth sending twice a second for a machine nobody is standing
@@ -1613,7 +1959,9 @@ const NEAR_ONLY := {"_t": true, "_press": true, "_grind": true, "_wrap": true, "
 	"starved_for": true, "blocked_for": true, "_clock": true, "_left_at": true,
 	"furnace_heat": true, "_holding": true, "_stuck": true,
 	"_load_clock": true, "_heat_clock": true, "_pour_clock": true, "_gripped": true, "_released": true,
-	"_held_out": true, "activity": true, "_handoff_at": true, "_cast_length": true}
+	"_held_out": true, "activity": true, "_handoff_at": true, "_cast_length": true,
+	"_phase": true, "_wait": true, "_wait_traffic": true, "_wrong_fuel": true, "_run": true,
+	"_held_on": true}
 
 
 # A field's value as it goes over the wire: "_jam" is the ScrapJam as a dict.
@@ -1648,6 +1996,10 @@ func _unrle(runs: Array) -> Array:
 
 
 func _get_field(n: Node, f: String) -> Variant:
+	if f == "_sale":
+		return n.get_meta("mp_sale") if n.has_meta("mp_sale") else null
+	if f == "_held_on":
+		return (1 if n.get("_held") != null else 0) if "_held" in n else null
 	if f == "_net_sat":
 		if not mp.is_host:
 			return n.get_meta("mp_net_sat") if n.has_meta("mp_net_sat") else null
@@ -1680,10 +2032,19 @@ func _get_field(n: Node, f: String) -> Variant:
 		return n.call("stowed_records") if n.has_method("stowed_records") else null
 	if f == "_drive":
 		return null   # an action, never a value to compare (see _send_drives)
+	if f == "_links":
+		return n.call("links_to_save") if n.has_method("links_to_save") and n.has_method("load_links") else null
 	if f == "_jam":
 		var sj: Variant = n.get("scrap_jam")
 		if sj is Object and (sj as Object).has_method("to_dict"):
-			return (sj as Object).call("to_dict")
+			# (2026-11-13) "decay" is a running timer: unrounded it changed on every pass,
+			# so every machine with a jam meter went out 10 times a second and was logged
+			# as a button press (2,800 of them in one half-hour log). Whole seconds are
+			# enough: the meter itself only steps once per DECAY_SECONDS.
+			var d: Dictionary = (sj as Object).call("to_dict")
+			if d.has("decay"):
+				d["decay"] = snappedf(float(d["decay"]), 1.0)
+			return d
 		return null
 	return n.get(f)
 
@@ -1815,6 +2176,21 @@ func _apply_field(n: Node, f: String, v: Variant) -> void:
 	if f == "_jam":
 		_apply_jam(n, v)
 		return
+	if f == "_combo" or f == "_sale":
+		_apply_stand(n, f, v)
+		return
+	# (2026-11-14) a drone's claws hold something on the host: its status line on a guest counts
+	# "_held != null" on board. The guest's drone is stopped and nothing else reads it there, so
+	# one shared stand-in node (never in the tree) does; nothing held: null again.
+	if f == "_held_on":
+		if "_held" in n:
+			if int(v) != 0 and n.get("_held") == null:
+				if _held_stand_in == null:
+					_held_stand_in = Node3D.new()
+				n.set("_held", _held_stand_in)
+			elif int(v) == 0 and n.get("_held") == _held_stand_in:
+				n.set("_held", null)
+		return
 	if f == "_stowed":
 		# the list itself, not restore_stowed(): a depot drone's version hands what it held
 		# back to the depot (GameState.depot_give) and empties the pod, which on a guest is
@@ -1876,6 +2252,75 @@ func _apply_field(n: Node, f: String, v: Variant) -> void:
 	if f == "_net_sat":
 		n.set_meta("mp_net_sat", float(v))
 		return
+	# (2026-11-14) a T-junction's arms set by hand: a T-splitter's way in (entry) and a T-joiner's
+	# way out (out_lane). Only set_entry/set_out lay its belt paths anew, and the game then
+	# refits the runs at its mouths and works the joints out again (set_t_by_hand). entry was
+	# never synced at all (not in the building's key either), out_lane was only stored.
+	if (f == "entry" and n.has_method("set_entry")) or (f == "out_lane" and n.has_method("set_out")):
+		if int(n.get(f)) != int(v):
+			n.call("set_entry" if f == "entry" else "set_out", int(v))
+			if builds != null and is_instance_valid(builds):
+				if n.has_method("ports") and builds.has_method("refit_runs_at"):
+					builds.call("refit_runs_at", n.call("ports"))
+				if builds.has_method("rebuild_junctions"):
+					builds.call("rebuild_junctions")
+		return
+	# (2026-11-14) a compact splitter's door filters: set_filter() also drops the door it already
+	# picked for the waiting item, so a host fed a guest's new filter does not send that item
+	# out a door the filter now shuts. A guest's copy is stopped: only its door tags get redrawn
+	# (set_filter would hold its feeder belt).
+	if f == "filters" and n.has_method("set_filter") and (v is PackedInt32Array or v is Array):
+		var cur_f: Variant = n.get("filters")
+		var want_f: Array = Array(v)
+		if mp.is_host and (cur_f is PackedInt32Array or cur_f is Array) and Array(cur_f).size() == want_f.size():
+			var old_f: Array = Array(cur_f)
+			for side in want_f.size():
+				if int(old_f[side]) != int(want_f[side]):
+					n.call("set_filter", side, int(want_f[side]))
+			return
+		n.set("filters", PackedInt32Array(want_f))
+		if n.has_method("refresh_door_tags"):
+			n.call("refresh_door_tags")
+		return
+	# (2026-11-14) an arm's belt links, through the game's own loader (as from a save)
+	if f == "_links":
+		if v is Array and n.has_method("load_links"):
+			n.call("load_links", v)
+		return
+	# (2026-11-14) the cabinet's end button. A guest's press runs on its own copy (hand.gd calls
+	# press_ending there) and never reached the host; its presses left go to the host as this
+	# edit, and the host presses its own button that many times (the game's checks included:
+	# armed, the pile dug out). The host's count comes back to the guest as a field.
+	if f == "_end_left" and n.has_method("press_ending"):
+		if mp.is_host:
+			var guard := 0
+			while int(n.get("_end_left")) > int(v) and guard < 6:
+				guard += 1
+				var before := int(n.get("_end_left"))
+				if not (n.has_method("ending_armed") and bool(n.call("ending_armed"))):
+					break
+				n.call("press_ending")
+				if int(n.get("_end_left")) >= before:
+					break  # refused (the pile is not dug out yet): the game said why on the host
+		else:
+			n.set("_end_left", int(v))
+			if n.has_method("_show_end_count"):
+				n.call("_show_end_count")
+		return
+	if f == "_unleashed" and n.has_method("press_ending"):
+		n.set("_unleashed", bool(v))
+		if bool(v):
+			n.set("_end_armed", false)  # the key is on its way: the button is done
+		return
+	# (2026-11-13) cabinet doors: the host opens or shuts its own (the door clip then
+	# reaches guests with the other animations); a guest only takes the state, its
+	# stopped copy plays the host's clip
+	if f == "_open" and n.has_method("open_doors") and n.has_method("close_doors"):
+		if mp.is_host:
+			n.call("open_doors" if bool(v) else "close_doors")
+		else:
+			n.set("_open", bool(v))
+		return
 	# Cables strung or cut by hand. The lists alone do nothing: the game keeps the
 	# real links elsewhere and works them out when it strings or cuts one.
 	if (f == "links_at" or f == "cuts_at") and n is PowerPole:
@@ -1911,6 +2356,26 @@ func _apply_field(n: Node, f: String, v: Variant) -> void:
 		(cur as Dictionary).merge(v)
 	else:
 		n.set(f, v)
+	if mp.is_host:
+		_after_filter(n, f)
+
+
+# (2026-11-14) Filters the game sets with two-value setters (set_emptying_kind(id, on),
+# set_accepting(bit, on)), so a guest's change lands raw above. Those setters also refresh
+# what the machine works from; the host does that part too: a depot re-tells its belt which
+# items to park (else the belt kept parking by the old list), a drone forgets the spots it
+# had marked as done (else up to 10 s of skipping them), an arm looks again at once.
+func _after_filter(n: Node, f: String) -> void:
+	if f == "emptying_kinds" and n.has_method("_sync_parks"):
+		n.call("_sync_parks")
+	elif f == "takes" and "_covered" in n:
+		var cov: Variant = n.get("_covered")
+		if cov is Dictionary:
+			(cov as Dictionary).clear()
+	elif f == "accept_mask" and "_scan_left" in n and "_stall" in n and "_clear" in n:
+		n.set("_stall", "")
+		n.set("_clear", false)
+		n.set("_scan_left", minf(float(n.get("_scan_left")), 0.15))
 
 
 # Parts ease towards the last pose we heard about, so ten packets a second
@@ -1918,6 +2383,7 @@ func _apply_field(n: Node, f: String, v: Variant) -> void:
 func _ease(delta: float) -> void:
 	_play_samples()
 	_play_claws()
+	_hold_pins()
 	if _goal.is_empty():
 		return
 	var step_t := delta / TICK
@@ -1940,6 +2406,7 @@ func _ease(delta: float) -> void:
 			var to: Transform3D = walk[1]
 			var t: float = minf(1.0, float(walk[2]) + step_t)
 			walk[2] = t
+			_moved_here(key, int(part_id), part as Node3D)
 			# axis by axis: interpolate_with would pull a skewed part through a
 			# rotation it never had
 			(part as Node3D).transform = Transform3D(Basis(
@@ -1947,6 +2414,7 @@ func _ease(delta: float) -> void:
 					from.basis.y.lerp(to.basis.y, t),
 					from.basis.z.lerp(to.basis.z, t)),
 				from.origin.lerp(to.origin, t))
+			_wrote_pose(key, int(part_id), part as Node3D)
 			if t >= 1.0:
 				done.append(part_id)
 		for gone in done:
@@ -2253,41 +2721,81 @@ func _read_anims(key: String, n: Node, entry: Dictionary) -> void:
 		var clip := String(a.current_animation)
 		if clip == "":
 			continue
-		# The speed as measured, not as the player states it: some machines hold a
-		# "playing" clip and scrub it by hand every frame (the wrapper sits on 0.0
-		# while idle), so the stated speed would set a guest's copy running.
+		# Speed: the player's own while the clip really runs, the measured one only where
+		# a machine holds a "playing" clip still or scrubs it by hand (the wrapper sits on
+		# 0.0 while idle), or the stated speed would set a guest's copy running.
+		# (1.2.21) Cycle clips that play once and start again from 0 (the compressor's
+		# press, a digester's feed) were measured going backwards at every restart and
+		# sent as -3x: the guest ran the clip back to 0 and stood there. A new clip was
+		# sent at speed 0 (nothing measured yet) and a clip running into its end as half
+		# speed. A step back, a first look and the end now keep the player's own speed.
 		var pos := a.current_animation_position
 		var mk := "%s#%d" % [key, i]
 		var last: Variant = _anim_seen.get(mk)
-		var speed := 0.0
+		var stated := a.get_playing_speed() if a.is_playing() else 0.0
+		var speed := stated
+		var jumped := false
 		var t_now := Time.get_ticks_usec()
+		var anim_res: Animation = a.get_animation(clip) if a.has_animation(clip) else null
+		var length := anim_res.length if anim_res != null else 0.0
+		var looped := anim_res != null and anim_res.loop_mode != Animation.LOOP_NONE
 		if last != null and last[0] == clip:
 			var dt := float(t_now - int(last[2])) / 1000000.0
 			var dp := pos - float(last[1])
-			var length := a.get_animation(clip).length if a.has_animation(clip) else 0.0
-			if dp < 0.0 and length > 0.0 and a.get_animation(clip).loop_mode != Animation.LOOP_NONE:
+			if dp < 0.0 and looped and length > 0.0:
 				dp += length
+			var kept := float(last[3]) if (last as Array).size() > 3 else stated
+			var was_jump: bool = (last as Array).size() > 4 and bool(last[4])
 			if dt > 0.02:
-				speed = snappedf(clampf(dp / dt, -8.0, 8.0), 0.05)
-				# a stated speed it really runs at: take that, it does not jitter
-				var stated := a.get_playing_speed() if a.is_playing() else 0.0
-				if absf(speed - stated) < 0.15 * maxf(absf(stated), 0.2):
-					speed = stated
-		_anim_seen[mk] = [clip, pos, t_now]
+				if dp < 0.0:
+					speed = stated            # started again from the top, or a seek back
+				elif dp < 0.0005:
+					speed = 0.0               # held: "playing" but not moving
+				elif not looped and length > 0.0 and pos >= length - 0.02:
+					speed = kept              # ran into its end between two looks
+				else:
+					var measured := snappedf(clampf(dp / dt, 0.0, 8.0), 0.05)
+					var near := 0.15 * maxf(absf(stated), 0.2)
+					if stated > 0.0 and dp > 0.15 and measured > 2.5 * stated and not was_jump and (absf(kept - stated) < near or absf(kept) < 0.05):
+						# (2026-11-14) a jump on, not a faster run: the game seeked its clip ahead
+						# (a rake's throw frame, a pulper's door) and mostly holds it there. Sent
+						# as up to 8x, the guest ran past it and was pulled back on the next
+						# word (rake head: 16-22 jumps of up to 3 m in 10 s, host 7). Hold where
+						# it is; a clip that runs on is measured at its speed again next look
+						# (only one look in a row counts as a jump: a clip scrubbed on fast by
+						# hand gets its measured speed from the second look on).
+						speed = 0.0
+						jumped = true
+					else:
+						# a stated speed it really runs at: take that, it does not jitter
+						speed = stated if absf(measured - stated) < near else measured
+			else:
+				speed = kept
+		_anim_seen[mk] = [clip, pos, t_now, speed, jumped]
 		state.append_array([i, clip, pos, speed])
 	var vat := PackedFloat32Array()
 	var ck := _clock_of(n)
 	if not ck.is_empty():
 		var c: Vector3 = n.get(ck[0])
 		vat = PackedFloat32Array([c.y + (_vat_now() - c.x) * c.z, c.z])
-	if state.is_empty() and vat.is_empty():
-		return
 	var now := Time.get_ticks_msec()
 	var was: Array = _anim_sent.get(key, [-ANIM_RESEND_MS, [], PackedFloat32Array()])
+	var had_clips := not (was[1] as Array).is_empty()
+	if state.is_empty() and vat.is_empty():
+		# (1.2.21) every clip has stopped: say so once. This used to return without a
+		# word, so a guest's copy ran on (a looping clip for good).
+		if had_clips:
+			_anim_sent[key] = [now, [], PackedFloat32Array()]
+			entry["a"] = []
+		return
 	var changed: bool = _full or now - int(was[0]) >= ANIM_RESEND_MS
 	if not changed:
-		# a new clip, a new speed, a stop or a start; the time runs on by itself
+		# a new clip, a new speed, a stop or a start; the time runs on by itself.
+		# (1.2.21) and where the guest's copy will be by now: a restart, a hold or a
+		# seek keeps the clip and the speed but moves the host's clip somewhere else,
+		# and the guest only heard of it up to a second later
 		var old: Array = was[1]
+		var since := float(now - int(was[0])) / 1000.0
 		if old.size() != state.size():
 			changed = true
 		else:
@@ -2296,16 +2804,38 @@ func _read_anims(key: String, n: Node, entry: Dictionary) -> void:
 						or absf(float(old[j + 3]) - float(state[j + 3])) > 0.1 * maxf(absf(float(old[j + 3])), 0.5):
 					changed = true
 					break
+				var expect := float(old[j + 2]) + float(old[j + 3]) * since
+				if _anim_off(ps[int(state[j])], String(state[j + 1]), expect, float(state[j + 2])) > ANIM_DRIFT_S:
+					changed = true
+					break
 		var ov: PackedFloat32Array = was[2]
 		if not changed and vat.size() == 2 and (ov.size() != 2 or absf(ov[1] - vat[1]) > 0.0001):
 			changed = true
 	if not changed:
 		return
 	_anim_sent[key] = [now, state, vat]
-	if not state.is_empty():
+	if not state.is_empty() or had_clips:
 		entry["a"] = state
 	if not vat.is_empty():
 		entry["v"] = vat
+
+
+# How far apart two times in a clip are: round the loop for a looping clip, and
+# a clip that plays once stands at its end after it.
+func _anim_off(p: Variant, clip: String, expected: float, actual: float) -> float:
+	var a: AnimationPlayer = null
+	if is_instance_valid(p):
+		a = p as AnimationPlayer
+	if a == null or not a.has_animation(clip):
+		return absf(expected - actual)
+	var anim := a.get_animation(clip)
+	var length := anim.length
+	if length <= 0.0:
+		return absf(expected - actual)
+	if anim.loop_mode != Animation.LOOP_NONE:
+		var d := absf(fposmod(expected, length) - fposmod(actual, length))
+		return minf(d, length - d)
+	return absf(clampf(expected, 0.0, length) - actual)
 
 
 func _one_way() -> float:
@@ -2343,8 +2873,9 @@ func _apply_anims(key: String, state: Array) -> void:
 			want = clampf(want, 0.0, length)
 		if not a.active:
 			a.active = true
-		# the freeze switched it off (mp_world _still_animations); it runs now
-		if a.process_mode == Node.PROCESS_MODE_DISABLED:
+		# the freeze switched it off (mp_world _still_animations); it runs now. Not one the
+		# game's LOD steps by hand (see _lod_steps)
+		if a.process_mode == Node.PROCESS_MODE_DISABLED and not _lod_steps(a):
 			a.process_mode = Node.PROCESS_MODE_INHERIT
 		if speed == 0.0:
 			if a.current_animation != clip:
@@ -2367,6 +2898,25 @@ func _apply_anims(key: String, state: Array) -> void:
 	for i in ps.size():
 		if not told.has(i) and is_instance_valid(ps[i]) and (ps[i] as AnimationPlayer).is_playing():
 			(ps[i] as AnimationPlayer).pause()
+
+
+# (2026-11-14) The game's LOD runs the clips of a machine at mid distance from this PC's eye
+# by hand (MachineLod._slow: player switched off, advance() a few times a second). Switching
+# such a player back on ran it twice, on its own and by the LOD's steps: a guest's rake ran
+# its clip at 2x, 0.7 s ahead of the host's, and was pulled back every stroke.
+var _slow_frame := -1
+var _slow_set := {}
+
+func _lod_steps(a: AnimationMixer) -> bool:
+	var f := Engine.get_process_frames()
+	if f != _slow_frame:
+		_slow_frame = f
+		_slow_set.clear()
+		var slow: Variant = _lod_static("_slow")
+		for e in (slow if slow is Array else []):
+			if e is Array and (e as Array).size() > 0 and is_instance_valid(e[0]):
+				_slow_set[(e[0] as Object).get_instance_id()] = true
+	return _slow_set.has(a.get_instance_id())
 
 
 # The parts any clip of these players moves: the poses leave them to the clips.
@@ -2522,7 +3072,12 @@ func _set_claw(key: String, c: int) -> void:
 
 
 const SHOW_BEHIND_MS := 200.0
-const SAMPLES := 4
+const SHOW_BEHIND_MAX_MS := 900.0
+var _gap_ms := {}     # guest: key -> how far apart its pose words come (host ms, smoothed)
+var _last_word := {}  # guest: key -> host ms of its last pose word
+const SAMPLES_MIN := 2
+const SAMPLES_MAX := 16
+const KEEP_BACK_MS := SHOW_BEHIND_MAX_MS + 250.0  # history kept per part, host ms
 const HOLD_GAP_MS := 700.0
 var _pose_off := INF        # guest: local ms - host ms of the quickest message lately
 var _pbuf := {}             # guest: key -> {part id: [[host ms, Transform3D], ...]}
@@ -2533,6 +3088,13 @@ func _host_ms() -> float:
 
 
 func _add_sample(key: String, id: int, t: float, to: Transform3D, now_xf: Transform3D) -> void:
+	# how far apart this machine's pose words come (moving ones; a stop in between is no gap)
+	var last_t := float(_last_word.get(key, -1.0))
+	if t > last_t:
+		if last_t > 0.0 and t - last_t < HOLD_GAP_MS:
+			var g := float(_gap_ms.get(key, t - last_t))
+			_gap_ms[key] = g + (t - last_t - g) * 0.2
+		_last_word[key] = t
 	var parts: Dictionary = _pbuf.get(key, {})
 	var list: Array = parts.get(id, [])
 	if list.is_empty():
@@ -2548,17 +3110,214 @@ func _add_sample(key: String, id: int, t: float, to: Transform3D, now_xf: Transf
 			# and holding it then made it stop and go (robot arms, measured)
 			list.append([t - TICK * 1000.0, last[1]])
 	list.append([t, to])
-	while list.size() > SAMPLES:
+	# (2026-11-14) keep what covers the time being shown (SHOW_BEHIND_MS back) and a bit more,
+	# not a fixed count: with poses every ~55 ms, 4 samples reached back 165 ms only. The
+	# oldest one then still lay ahead of the time shown, the part waited on it and slid on
+	# when the list moved (depot drone: still in 31% of the frames where the host's flew,
+	# rotors jumping 24 cm).
+	while list.size() > SAMPLES_MIN and float(list[1][0]) < t - KEEP_BACK_MS:
+		list.pop_front()
+	while list.size() > SAMPLES_MAX:
 		list.pop_front()
 	parts[id] = list
 	_pbuf[key] = parts
 
 
+# (2026-11-14, F54) A sale at the stand runs on the host only: its payout text, register
+# sound, best-sale and best-combo text and the combo count never showed on a guest (the
+# guest's stand had no popup at all after the host's sold for an hour). The host notes each
+# sale (number, amount and which kind of celebration it got) as the made-up field _sale;
+# a guest near the stand plays the game's own celebration for it (text in its own language).
+# Not its till drawer and work clip: those already follow the host's clips. No coins either
+# (they are items of their own). The combo count travels as _combo; a milestone flies here.
+var _sales_watched := {}  # host: stand instance id -> true (sold connected)
+var _sale_seen := {}      # host: stand instance id -> [number, best_sale, combo told, popup tween ids]
+var _stand_first := {}    # guest: stand instance id -> ms its first field came
+var _sale_last := {}      # guest: stand instance id -> number of the last sale seen
+const SALE_SHOW_M := 60.0 # guest: beyond this the celebration is not worth playing
+const SALE_JOIN_MS := 3000
+const SALE_FRESH_MS := 4000  # a sale older than this is not celebrated any more
+
+func _watch_sales(s: Node) -> void:
+	var id := s.get_instance_id()
+	if _sales_watched.has(id) or not s.has_signal("sold"):
+		return
+	_sales_watched[id] = true
+	_sale_seen[id] = [0, float(GameState.get("best_sale")), bool(s.get("_combo_told")) if "_combo_told" in s else false,
+		_tween_ids(s)]
+	s.connect("sold", _on_stand_sold.bind(s))
+
+
+func _tween_ids(s: Node) -> Array:
+	var out: Array = []
+	var tw: Variant = s.get("_popup_tweens")
+	if tw is Array:
+		for t in tw:
+			out.append((t as Object).get_instance_id() if t is Object and is_instance_valid(t) else 0)
+	return out
+
+
+# Called right after the game's celebration of the sale (sold is emitted after it).
+func _on_stand_sold(_strands: Variant, amount: Variant, s: Node) -> void:
+	if not is_instance_valid(s):
+		return
+	var id := s.get_instance_id()
+	var seen: Array = _sale_seen.get(id, [0, 0.0, false, []])
+	var best_now := float(GameState.get("best_sale"))
+	var best := best_now > float(seen[1])
+	var told := bool(s.get("_combo_told")) if "_combo_told" in s else false
+	var combo_best := told and not bool(seen[2]) and not best
+	# "selling too fast" shows in its own colour: the popup this sale just started tells
+	var cheap := false
+	var ids := _tween_ids(s)
+	var pops: Variant = s.get("_popups")
+	var cheap_col: Variant = (s.get_script() as Script).get_script_constant_map().get("COL_CHEAP") \
+		if s.get_script() is Script else null
+	if not best and not combo_best and pops is Array and cheap_col is Color:
+		var old: Array = seen[3]
+		for i in ids.size():
+			if int(ids[i]) != 0 and (i >= old.size() or int(old[i]) != int(ids[i])) \
+			and i < (pops as Array).size() and pops[i] is Label3D:
+				cheap = ((pops[i] as Label3D).modulate as Color).is_equal_approx(cheap_col)
+	var n_sale := int(seen[0]) + 1
+	_sale_seen[id] = [n_sale, best_now, told, ids]
+	# the amount exactly as the host has it: the till and popup round it the same way then
+	s.set_meta("mp_sale", [n_sale, float(amount), best, combo_best, cheap, Time.get_ticks_msec()])
+
+
+# guest: when the stand was first seen here (see _rescan); what comes within SALE_JOIN_MS of
+# that is the state the host had before we came, not news
+func _note_stand(s: Node) -> void:
+	if not _stand_first.has(s.get_instance_id()):
+		_stand_first[s.get_instance_id()] = Time.get_ticks_msec()
+
+
+# guest: how long ago the host made a sale stamped with its clock (the host's pings carry
+# that clock; mp_trace keeps the last one). -1: not known yet.
+func _host_age_ms(host_ms: int) -> int:
+	var tracer: Variant = mp.get("trace")
+	var pair: Variant = tracer.get("_clock_pair") if tracer != null and is_instance_valid(tracer) else null
+	if not (pair is Array) or (pair as Array).size() < 2:
+		return -1
+	return int(pair[1]) + (Time.get_ticks_msec() - int(pair[0])) - host_ms
+
+
+func _apply_stand(n: Node, f: String, v: Variant) -> void:
+	var id := n.get_instance_id()
+	var now := Time.get_ticks_msec()
+	_note_stand(n)
+	var settled := now - int(_stand_first[id]) >= SALE_JOIN_MS
+	if f == "_combo":
+		if not ("_combo" in n):
+			return
+		var was := int(n.get("_combo"))
+		n.set("_combo", int(v))
+		if settled and int(v) > was and _sale_near(n) and n.has_method("combo_milestone") \
+		and n.has_method("_fly_combo") and bool(n.call("combo_milestone", int(v))):
+			n.call("_fly_combo", int(v))
+		return
+	if not (v is Array) or (v as Array).size() < 6:
+		return
+	n.set_meta("mp_sale", v)  # so the host's repeat of it reads as known
+	var last: Variant = _sale_last.get(id)
+	var number := int(v[0])
+	_sale_last[id] = number
+	if last != null and int(last) == number:
+		return
+	# the host's last sale (maybe an hour old) comes along when we join or walk near: old news
+	var age := _host_age_ms(int(v[5]))
+	if (age >= 0 and age > SALE_FRESH_MS) or (age < 0 and not settled):
+		return
+	if not _sale_near(n) or not n.has_method("_celebrate"):
+		return
+	var amount := float(v[1])
+	if bool(v[2]):
+		GameState.set("best_sale", maxf(float(GameState.get("best_sale")), amount))
+	var keep := {}
+	for p in ["_till_anim", "_anim"]:
+		if p in n:
+			keep[p] = n.get(p)
+			n.set(p, null)
+	n.call("_celebrate", amount, 0, bool(v[2]), bool(v[3]), bool(v[4]))
+	for p in keep:
+		n.set(p, keep[p])
+
+
+func _sale_near(n: Node) -> bool:
+	var pl: Variant = mp.world_sync.get("player") if mp.world_sync != null else null
+	if not (pl is Node3D) or not is_instance_valid(pl) or not (pl as Node3D).is_inside_tree() \
+	or not (n is Node3D) or not (n as Node3D).is_inside_tree():
+		return false
+	return (pl as Node3D).global_position.distance_to((n as Node3D).global_position) < SALE_SHOW_M
+
+
+# (2026-11-14) The sell stand and the shop are not frozen on a guest (SINGLES): their own
+# code moves some parts there too (the stand weighs what lies on it: scale plate, needle,
+# money sack). Host poses on the same parts made them fight: the guest's sack, star and
+# plate jumped in 200 frames of 10 s, the host's in none. A part that moved since we last
+# put it somewhere is moved by the game here; from then on the host's pose is put back on it
+# every frame (_hold_pins, after the game's physics step), so it shows the host's weighing
+# and not the guest's own (which read 0.70 where the host's plate stood empty).
+var _wrote := {}        # key -> {part id: transform we last gave it}
+var _local_parts := {}  # key -> {part id: true} driven by the guest's own game
+
+func _moved_here(key: String, id: int, part: Node3D) -> bool:
+	if not SINGLES.has(String(_group.get(key, ""))):
+		return false
+	var mine: Dictionary = _local_parts.get(key, {})
+	if mine.has(id):
+		return true
+	# a part a clip moves (here and on the host) is the clip's: not held
+	if (_owned.get(key, {}) as Dictionary).has(id):
+		return false
+	var was: Dictionary = _wrote.get(key, {})
+	if was.has(id) and not part.transform.is_equal_approx(was[id]):
+		mine[id] = true
+		_local_parts[key] = mine
+		if _log:
+			print("[MPMACH] %s part %d is moved by the game here: the host's pose is held on it" % [key, id])
+		return true
+	return false
+
+
+func _hold_pins() -> void:
+	for key in _local_parts:
+		var mine: Dictionary = _local_parts[key]
+		var was: Dictionary = _wrote.get(key, {})
+		if mine.is_empty() or was.is_empty():
+			continue
+		var parts := _parts_of(key)
+		var slot := _slot_of(key)
+		var owned: Dictionary = _owned.get(key, {})
+		for id in mine:
+			if not was.has(id) or owned.has(id):
+				continue  # a clip's part (it may have been posed before the clips were synced)
+			var idx: int = int(slot.get(id, -1))
+			if idx < 0 or idx >= parts.size() or parts[idx] == null or not is_instance_valid(parts[idx]):
+				continue
+			var part := parts[idx] as Node3D
+			if not part.transform.is_equal_approx(was[id]):
+				part.transform = was[id]
+
+
+func _wrote_pose(key: String, id: int, part: Node3D) -> void:
+	if not SINGLES.has(String(_group.get(key, ""))):
+		return
+	var was: Dictionary = _wrote.get(key, {})
+	was[id] = part.transform
+	_wrote[key] = was
+
+
 func _play_samples() -> void:
 	if _pbuf.is_empty() or _pose_off == INF:
 		return
-	var rt := _host_ms() - _pose_off - SHOW_BEHIND_MS
+	var rt0 := _host_ms() - _pose_off
 	for key in _pbuf.keys():
+		# (2026-11-14) shown far enough back for how often this machine's poses come: the ones
+		# out of RANGE get theirs 5 or 2.5 times a second, and 200 ms back the newest sample
+		# had often not come yet: the arm stood until it did (robot arms 36 m off: no sample
+		# ahead in 45% of the frames they moved in, 82% moving against the host's 91%)
+		var rt := rt0 - clampf(float(_gap_ms.get(key, 0.0)) * 1.6, SHOW_BEHIND_MS, SHOW_BEHIND_MAX_MS)
 		var parts := _parts_of(key)
 		var slot := _slot_of(key)
 		var ids: Dictionary = _pbuf[key]
@@ -2587,6 +3346,8 @@ func _play_samples() -> void:
 				# axis by axis, like _ease: some parts are skewed
 				xf = Transform3D(Basis(x0.basis.x.lerp(x1.basis.x, f), x0.basis.y.lerp(x1.basis.y, f),
 					x0.basis.z.lerp(x1.basis.z, f)), x0.origin.lerp(x1.origin, f))
+			_moved_here(key, int(id), parts[idx] as Node3D)
 			(parts[idx] as Node3D).transform = xf
+			_wrote_pose(key, int(id), parts[idx] as Node3D)
 		if ids.is_empty():
 			_pbuf.erase(key)

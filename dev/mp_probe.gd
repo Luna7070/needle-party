@@ -27,6 +27,30 @@ func _ready() -> void:
 		if s != null and n != mp and n != self:
 			out.store_line("\n### AUTOLOAD %s (%s)" % [n.name, s.resource_path])
 			_dump(out, s)
+	# native classes the game adds (the belt core, BeltRunCore and friends): not scripts, so
+	# not in the list above; their methods, properties and signals as the engine reports them
+	out.store_line("
+== native extension classes")
+	for c in ClassDB.get_class_list():
+		if ClassDB.class_get_api_type(c) != ClassDB.API_EXTENSION:
+			continue
+		out.store_line("
+### NATIVE %s extends %s" % [c, ClassDB.get_parent_class(c)])
+		var nm: Array = []
+		for m in ClassDB.class_get_method_list(c, true):
+			var args: Array = []
+			for x in m["args"]:
+				args.append(x["name"])
+			nm.append("%s(%s)" % [m["name"], ",".join(args)])
+		out.store_line("  methods: " + ", ".join(nm))
+		var np: Array = []
+		for pr in ClassDB.class_get_property_list(c, true):
+			np.append(pr["name"])
+		out.store_line("  props: " + ", ".join(np))
+		var ns: Array = []
+		for sg in ClassDB.class_get_signal_list(c, true):
+			ns.append(sg["name"])
+		out.store_line("  signals: " + ", ".join(ns))
 	out.close()
 	print("[MPProbe] wrote ", ProjectSettings.globalize_path("user://mp_probe_dump.txt"))
 	get_tree().quit()

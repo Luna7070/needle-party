@@ -29,3 +29,7 @@ Desktop.ini
 .vscode/
 .idea/
 dev/lab/
+
+# local assistant notes and settings: private, never published
+/CLAUDE.md
+/.claude/

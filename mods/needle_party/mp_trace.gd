@@ -215,15 +215,26 @@ var _ring_tick_t: Array = []
 var _last_items: Array = []   # the last 3 item events, for error lines
 var _last_belts: Array = []   # the last 3 belt words
 
+# (1.2.21) A ring may run RING_SLACK lines over its cap, or RING_SLACK_MS past its window,
+# before it is trimmed, all in one slice. Before, a full ring was sliced on every append:
+# both arrays (10 000 belt words) copied to drop one line, 0.33 ms a line. With 675 belts
+# near a player that was 220 ms for one belt send, and the host stalled 60-90 ms twice a
+# second (bug report "[lag] 111", big belt yard).
+const RING_SLACK := 512
+const RING_SLACK_MS := 2000
+
 func _ring_add(lines: Array, times: Array, text: String, cap: int) -> void:
 	var now := Time.get_ticks_msec()
 	lines.append(text)
 	times.append(now)
-	# drop what is older than the window, or over the cap: from the front, a slice at a time
+	var n := times.size()
+	if n <= cap + RING_SLACK and now - int(times[0]) <= RING_MS + RING_SLACK_MS:
+		return
+	# drop what is older than the window, or over the cap: from the front, in one slice
 	var cut := 0
-	while cut < times.size() and (now - int(times[cut]) > RING_MS or times.size() - cut > cap):
+	while cut < n and (now - int(times[cut]) > RING_MS or n - cut > cap):
 		cut += 1
-	if cut > 64 or (cut > 0 and times.size() > cap):
+	if cut > 0:
 		lines.assign(lines.slice(cut))
 		times.assign(times.slice(cut))
 
@@ -346,6 +357,24 @@ func _queue_err(text: String) -> void:
 	_err_m.unlock()
 
 
+# (2026-11-15) errors (not warnings) per script file, for health watches (mp_belt_draw.gd): from any thread
+var _err_files := {}
+
+func _count_err(file: String, error_type: int) -> void:
+	if error_type == 1:   # Logger.ERROR_TYPE_WARNING
+		return
+	_err_m.lock()
+	_err_files[file] = int(_err_files.get(file, 0)) + 1
+	_err_m.unlock()
+
+
+func errors_in(file: String) -> int:
+	_err_m.lock()
+	var n := int(_err_files.get(file, 0))
+	_err_m.unlock()
+	return n
+
+
 func _drain_errs() -> void:
 	if _err_q.is_empty():
 		return
@@ -388,7 +417,8 @@ func _hook_errors() -> void:
 	s.source_code = "extends Logger\nvar sink: Object = null\n" \
 		+ "func _log_error(function: String, file: String, line: int, code: String, rationale: String, editor_notify: bool, error_type: int, script_backtraces: Array[ScriptBacktrace]) -> void:\n" \
 		+ "\tif sink != null:\n" \
-		+ "\t\tsink._queue_err(\"%s @%s:%d\" % [(rationale if rationale != \"\" else code).left(200), file.get_file(), line])\n"
+		+ "\t\tsink._queue_err(\"%s @%s:%d\" % [(rationale if rationale != \"\" else code).left(200), file.get_file(), line])\n" \
+		+ "\t\tsink._count_err(file.get_file(), error_type)\n"
 	if s.reload() != OK:
 		return
 	var lg: Object = s.new()
