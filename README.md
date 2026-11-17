@@ -59,7 +59,7 @@ The first start tells you this and lets you turn it off, and the panel (F9) has 
 
 ## Credits
 
-Made by **Luna** and **Lolfa** for playing with a friend — vibecoded with an AI assistant.
+Made by **Luna** and **Lolfa** — vibecoded with an AI assistant.
 Based on [AleDev11's co-op mod](https://github.com/AleDev11/FindTheNeedle-Coop-Mod) (MIT),
 with performance ideas from xRangerDE's *Multiplayer Enhanced* (MIT).
 Farmer model by Quaternius (CC0).
